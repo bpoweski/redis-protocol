@@ -8,14 +8,15 @@
   (let [parser (ReplyParser.)
         state  (.parse parser s)]
     (if (= state (ReplyParser/PARSE_COMPLETE))
-      (container->reply (.root parser))
+      (first (.root parser))
       (throw (ex-info "parse incomplete" {})))))
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
     (is (= (parse-str "+OK\r\n") "OK")))
   (testing "RESP Errors"
-    (is (= (parse-str "-Error message\r\n") "Error message")))
+    (is (= (parse-str "-Error message\r\n") "Error message"))
+    (is (= (parse-str "-ERR wrong number of arguments for 'get' command\r\n") "ERR wrong number of arguments for 'get' command")))
   (testing "RESP Integers"
     (is (= (parse-str ":1\r\n") 1))
     (is (= (parse-str ":10\r\n") 10))
@@ -45,4 +46,11 @@
                          (clojure.stacktrace/print-stack-trace err)))]
       (println state-1)
       (println state-2)))
+
+  (let [parser (ReplyParser.)]
+    (doseq [part  (->> "-ERR wrong number of arguments for 'get' command\r\n"
+                       vec
+                       (partition-all 8)
+                       (map #(apply str %)))]
+      (println (.parse parser part))))
   )

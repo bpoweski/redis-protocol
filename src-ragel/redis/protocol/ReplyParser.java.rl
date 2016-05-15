@@ -284,7 +284,7 @@ public class ReplyParser {
     println("" + incremental.parse("\r"));
     println("" + incremental.parse("\n"));
 
-    System.exit(0);
+    new ReplyParser().parse("ERR wrong number of arguments for 'get' command\r\n");
 
     // status
     new ReplyParser().parse("+OK\r\n".getBytes());

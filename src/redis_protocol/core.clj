@@ -4,7 +4,8 @@
             [clojure.tools.trace :as t]
             [taoensso.timbre :as timbre]
             [clojure.core.async :as async])
-  (:import (java.net InetSocketAddress StandardSocketOptions)
+  (:import (redis.protocol ReplyParser)
+           (java.net InetSocketAddress StandardSocketOptions)
            (java.util Arrays)
            (java.nio ByteBuffer)
            (java.nio.channels AsynchronousSocketChannel CompletionHandler)))
@@ -47,21 +48,23 @@
         _ (System/arraycopy b 0 ba (alength a) (alength b))]
     ba))
 
-;; (defn run [command]
-;;   (with-open [client (AsynchronousSocketChannel/open)]
-;;     @(.connect client (InetSocketAddress. "127.0.0.1" 6379))
-;;     (let [req (bs/convert (args->str command) ByteBuffer)
-;;           _   @(.write client req)]
-;;       (loop [reply  nil
-;;              buffer (ByteBuffer/allocateDirect 8)]
-;;         (let [bytes-read @(.read client buffer)
-;;               buffer     (doto buffer
-;;                            (.limit bytes-read)
-;;                            (.rewind))
-;;               reply      (if (nil? reply)
-;;                            (parse-chunk buffer)
-;;                            (parse-next-chunk reply buffer))]
-;;           (if (complete? reply)
-;;             (do (.clear buffer)
-;;                 reply)
-;;             (recur reply (.compact buffer))))))))
+(defn run [command]
+  (with-open [client (AsynchronousSocketChannel/open)]
+    @(.connect client (InetSocketAddress. "127.0.0.1" 6379))
+    (let [req (bs/convert (args->str command) ByteBuffer)
+          _   @(.write client req)]
+      (loop [parser        (ReplyParser.)
+             buffer        (ByteBuffer/allocateDirect 20)
+             read-attempts 0]
+        (when (< read-attempts 50)
+          (let [bytes-read @(.read client buffer)
+                buffer     (.flip buffer)
+                ba         (byte-array bytes-read)
+                _          (.get buffer ba 0 bytes-read)
+                outcome    (.parse parser ba)]
+            (debug-bytes ba)
+            (condp = outcome
+              ReplyParser/PARSE_INCOMPLETE (do (debug "parse is incomplete")
+                                               (recur parser (.clear buffer) (inc read-attempts)))
+              ReplyParser/PARSE_COMPLETE   (do (debug "parse is complete")
+                                               (.root parser)))))))))

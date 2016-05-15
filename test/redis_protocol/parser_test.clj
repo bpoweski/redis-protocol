@@ -40,7 +40,9 @@
 (comment
   (loop [parser (ReplyParser.)]
     (let [state-1 (.parse parser "-ERROR\r")
-          state-2 (.parse parser "\n")]
+          state-2 (try (.parse parser "\n")
+                       (catch Exception err
+                         (clojure.stacktrace/print-stack-trace err)))]
       (println state-1)
       (println state-2)))
   )

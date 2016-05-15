@@ -4,15 +4,15 @@
 machine resp;
 
 action mark {
-  markStart = fpc;
+  mark = fpc;
 }
 
 action delimted_reply {
-  emit(new String(Arrays.copyOfRange(data, markStart, fpc - 1)));
+  emit(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
 }
 
 action integer_reply {
-  emit(Long.parseLong(new String(Arrays.copyOfRange(data, markStart, fpc - 1))));
+  emit(Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc - 1))));
 }
 
 action empty_bulk_reply {
@@ -24,16 +24,16 @@ action null_bulk_reply {
 }
 
 action bulk_header_start {
-  bulkLength = (int)Long.parseLong(new String(Arrays.copyOfRange(data, markStart, fpc)));
+  bulkLength = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc)));
 }
 
 action bulk_reply_content_start {
-  markStart = fpc;
+  mark = fpc;
   fexec fpc + bulkLength + 1;
 }
 
 action bulk_reply {
-  emit(new String(Arrays.copyOfRange(data, markStart, markStart + bulkLength)));
+  emit(new String(Arrays.copyOfRange(data, mark, mark + bulkLength)));
 }
 
 action push_empty_array {
@@ -45,7 +45,7 @@ action push_null_array {
 }
 
 action start_array {
-  int len = (int)Long.parseLong(new String(Arrays.copyOfRange(data, markStart, fpc - 1)));
+  int len = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
   ArrayContainer arr = new ArrayContainer(len, currentParent);
   emit(arr);
 }
@@ -89,9 +89,13 @@ public class ReplyParser {
   // parser state
   public final ArrayContainer root;
   private ArrayContainer currentParent;
-  private int markStart   = 0;
+  private int mark = 0;
   private int bulkLength  = -1;
   private int parseState  = PARSE_NOT_STARTED;
+
+  // incremental state
+  private int discardMarker = 0;
+  private byte[] previousBuffer = null;
 
   // ragel members
   private int p;
@@ -102,7 +106,7 @@ public class ReplyParser {
   private int cs;
   private int act;
 
-  public static class ArrayContainer extends ArrayList {
+  public static class ArrayContainer extends ArrayList<Object> {
     public final int length;
     public final ArrayContainer parent;
 
@@ -179,7 +183,7 @@ public class ReplyParser {
 
     for (int i = 0; i < stop - start; i++) {
       String s = "  ";
-      if (markStart == (start + i)) {
+      if (mark == (start + i)) {
         s = "  ^";
       } else if (ts == (start + i)) {
         s = "  *";
@@ -217,11 +221,23 @@ public class ReplyParser {
     popMultiBulk();
   }
 
-  public Object parse(byte[] data) {
-    p   = 0;
+  public Object parse(byte[] buffer) {
+    byte[] data = null;
+
+    if (previousBuffer != null) {
+      data = new byte[previousBuffer.length + buffer.length];
+      System.arraycopy(previousBuffer, 0, data, 0, previousBuffer.length);
+      System.arraycopy(buffer, 0, data, previousBuffer.length, buffer.length);
+
+    } else {
+      data = buffer;
+      p = 0;
+      parseState = PARSE_INCOMPLETE;
+    }
+
     eof = data.length;
     pe  = data.length;
-    parseState = PARSE_INCOMPLETE;
+
     println("============================");
     println("Parse:\n" + new String(data));
 
@@ -239,6 +255,7 @@ public class ReplyParser {
         break;
       case PARSE_INCOMPLETE:
         print("PARSE_INCOMPLETE ");
+        previousBuffer = data;
         break;
       case PARSE_COMPLETE:
         print("PARSE_COMPLETE ");
@@ -257,8 +274,17 @@ public class ReplyParser {
 
   public static void main(String[] args) {
     // error
-    new ReplyParser().parse("-Error message\r\n");
-    new ReplyParser().parse("-Error incomplete");
+    // new ReplyParser().parse("-Error message\r\n");
+
+    // new ReplyParser().parse("-Error incomplete");
+
+    println("=== Incremental ===");
+    ReplyParser incremental = new ReplyParser();
+    println("" + incremental.parse("-ERR"));
+    println("" + incremental.parse("\r"));
+    println("" + incremental.parse("\n"));
+
+    System.exit(0);
 
     // status
     new ReplyParser().parse("+OK\r\n".getBytes());

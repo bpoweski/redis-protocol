@@ -11,7 +11,7 @@ ragel -J src-ragel/redis/protocol/$CLASS_NAME.java.rl -o $JAVA_FILE
 # ragel -Vp -Sresp_array_header src-ragel/redis/protocol/$CLASS_NAME.java.rl -o /tmp/resp.dot
 # dot /tmp/resp.dot -Tpng -o /tmp/resp.png
 
-javac -g -d target/classes $JAVA_FILE
+javac -Xlint:unchecked -g -d target/classes $JAVA_FILE
 
 if [[ $DEBUG -eq "1" ]]; then
   jdb -classpath target/classes redis.protocol.$CLASS_NAME

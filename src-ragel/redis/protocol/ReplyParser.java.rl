@@ -50,6 +50,16 @@ action start_array {
   emit(arr);
 }
 
+action check_end_of_reply {
+  if (p == pe && pe == eof) {
+    parseState = PARSE_COMPLETE;
+  } else if (currentParent == root && root.isFull()) {
+    parseState = PARSE_OVERFLOW;
+    fhold;
+    fbreak;
+  }
+}
+
 crlf               = "\r\n";
 
 # RESP Errors or Simple Strings
@@ -67,7 +77,7 @@ resp_bulk          = "$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content);
 # RESP Arrays
 resp_array_header  = "*" ( ("-1" >mark crlf @push_null_array) | (digit+ >mark crlf @start_array) );
 
-main := (resp_delimited | resp_integer | resp_bulk | resp_array_header)+ %eof{ parseState = PARSE_COMPLETE; };
+main := ( (resp_delimited | resp_integer | resp_bulk | resp_array_header) %check_end_of_reply)+;
 
 }%%
 
@@ -83,6 +93,7 @@ public class ReplyParser {
   public static final int PARSE_OK          = 0;
   public static final int PARSE_INCOMPLETE  = 1;
   public static final int PARSE_COMPLETE    = 2;
+  public static final int PARSE_OVERFLOW    = 3;
 
   public static final ArrayList<Object> EMPTY_ARRAY = new ArrayList<Object>();
 
@@ -92,6 +103,7 @@ public class ReplyParser {
   private int mark = 0;
   private int bulkLength  = -1;
   private int parseState  = PARSE_NOT_STARTED;
+  private byte[] data = null;
 
   // incremental state
   private int discardMarker = 0;
@@ -221,14 +233,18 @@ public class ReplyParser {
     popMultiBulk();
   }
 
-  public Object parse(byte[] buffer) {
-    byte[] data = null;
+  public byte[] getOverflow() {
+    byte[] overflow = new byte[pe - p];
+    System.arraycopy(data, p, overflow, 0, overflow.length);
+    return overflow;
+  }
 
-    if (previousBuffer != null) {
+  public Object parse(byte[] buffer) {
+    if (data != null) {
+      byte[] previousBuffer = data;
       data = new byte[previousBuffer.length + buffer.length];
       System.arraycopy(previousBuffer, 0, data, 0, previousBuffer.length);
       System.arraycopy(buffer, 0, data, previousBuffer.length, buffer.length);
-
     } else {
       data = buffer;
       p = 0;
@@ -250,12 +266,11 @@ public class ReplyParser {
       case PARSE_ERROR:
         print("PARSE_ERROR ");
         break;
-      case PARSE_OK:
-        println("PARSE_OK ");
+      case PARSE_OVERFLOW:
+        println("PARSE_OVERFLOW ");
         break;
       case PARSE_INCOMPLETE:
         print("PARSE_INCOMPLETE ");
-        previousBuffer = data;
         break;
       case PARSE_COMPLETE:
         print("PARSE_COMPLETE ");
@@ -284,11 +299,14 @@ public class ReplyParser {
     println("" + incremental.parse("\r"));
     println("" + incremental.parse("\n"));
 
-    new ReplyParser().parse("ERR wrong number of arguments for 'get' command\r\n");
+    new ReplyParser().parse("-ERR wrong number of arguments for 'get' command\r\n");
 
     // status
     new ReplyParser().parse("+OK\r\n".getBytes());
     new ReplyParser().parse("+OK_INCOMPLETE\r");
+    ReplyParser overflow = new ReplyParser();
+    overflow.parse("+OK\r\n+NEXT\r");
+    byte[] overflowBytes = overflow.getOverflow();
 
     // integer
     new ReplyParser().parse(":1000\r\n");

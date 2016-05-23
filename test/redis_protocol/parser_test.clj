@@ -1,6 +1,6 @@
 (ns redis-protocol.parser-test
-  (:require  [clojure.test :refer :all]
-             [redis-protocol.parser :refer :all])
+  (:require [clojure.test :refer :all]
+            [redis-protocol.util :as util])
   (:import (redis.protocol ReplyParser)))
 
 
@@ -36,7 +36,11 @@
     (is (= (parse-str "*3\r\n:1\r\n:2\r\n:3\r\n") [1 2 3]))
     (is (= (parse-str "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n") [1 2 3 4 "foobar"]))
     (is (= (parse-str "*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n") [[1 2 3] ["Foo" "Bar"]]))
-    (is (= (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") ["foo" nil "bar"]))))
+    (is (= (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") ["foo" nil "bar"])))
+  (testing "Overflowing a response"
+    (let [parser (ReplyParser.)]
+      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
+      (is (util/bytes= (.getOverflow parser) (.getBytes "+O"))))))
 
 (comment
   (loop [parser (ReplyParser.)]

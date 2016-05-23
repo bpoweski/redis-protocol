@@ -13,15 +13,6 @@
   (testing "SET"
     (is (= (encode-str "SET") "$3\r\nSET\r\n"))))
 
-(deftest buffer=-test
-  (is (true? (buffer= (bs/to-byte-buffer "foo") (bs/to-byte-buffer "foo"))))
-  (is (false? (buffer= (bs/to-byte-buffer "foo") (bs/to-byte-buffer "foo ")))))
-
-(deftest aconcat-bytes-test
-  (is (bytes= (aconcat-bytes (.getBytes "a") (.getBytes "b")) (.getBytes "ab")))
-  (is (bytes= (aconcat-bytes (.getBytes "a") (.getBytes "")) (.getBytes "a")))
-  (is (bytes= (aconcat-bytes (.getBytes "") (.getBytes "")) (.getBytes ""))))
-
 ;; (deftest complete?-test
 ;;   (is (complete? (bs/to-byte-array "+OK\r\n")))
 ;;   (is (not (complete? (bs/to-byte-array "+OK\r"))))

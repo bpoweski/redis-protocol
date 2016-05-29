@@ -13,6 +13,16 @@
   (testing "SET"
     (is (= (encode-str "SET") "$3\r\nSET\r\n"))))
 
+(deftest ops->str-test
+  (is (= "[---]" (ops->str 0)))
+  (is (= "[--C]" (ops->str OP_CONNECT)))
+  (is (= "[R--]" (ops->str OP_READ)))
+  (is (= "[-W-]" (ops->str OP_WRITE)))
+  (is (= "[RW-]" (ops->str (bit-or OP_WRITE OP_READ))))
+  (is (= "[RWC]" (ops->str (bit-or OP_CONNECT OP_WRITE OP_READ)))))
+
+
+
 ;; (deftest complete?-test
 ;;   (is (complete? (bs/to-byte-array "+OK\r\n")))
 ;;   (is (not (complete? (bs/to-byte-array "+OK\r"))))

@@ -51,7 +51,7 @@ action start_array {
 }
 
 action check_end_of_reply {
-  if (p == pe && pe == eof) {
+  if (p == pe && pe == eof && root.isComplete()) {
     parseState = PARSE_COMPLETE;
   } else if (currentParent == root && root.isFull()) {
     parseState = PARSE_OVERFLOW;
@@ -138,6 +138,24 @@ public class ReplyParser {
       return size() >= length;
     }
 
+    public boolean isComplete() {
+      if (!isFull()) {
+        return false;
+      }
+
+      for (Object x : this) {
+        if (x instanceof ArrayContainer) {
+          ArrayContainer arrayElement = (ArrayContainer)x;
+
+          if (!arrayElement.isComplete()) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }
+
     public boolean addItem(Object value) {
       if (isFull()) {
         throw new RuntimeException("Container is full!");
@@ -168,11 +186,11 @@ public class ReplyParser {
   }
 
   public static void println(String s) {
-    System.out.println(s);
+    // System.out.println(s);
   }
 
   public static void print(String s) {
-    System.out.print(s);
+    // System.out.print(s);
   }
 
   public void printchars(byte[] data, int start, int stop) {

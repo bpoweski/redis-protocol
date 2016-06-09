@@ -2,10 +2,13 @@
   (:require [clojure.test :refer :all :exclude [report]]
             [clojure.java.data :as java]
             [redis-protocol.core :refer :all]
+            [redis-protocol.util :as util]
             [taoensso.timbre :as timbre]
             [docker.client :as docker]
-            [redis-protocol.core :as redis]
-            [taoensso.carmine :as car]))
+            [redis-protocol.core :refer :all]
+            [taoensso.carmine :as car]
+            [taoensso.carmine.protocol :as proto])
+  (:import (java.net InetSocketAddress)))
 
 
 (timbre/refer-timbre)
@@ -31,11 +34,40 @@
   (timbre/set-level! :debug))
 
 (defn call [client & args]
-  @(redis/send-command client (vec args)))
+  @(send-command client (vec args)))
 
-(use-fixtures :each without-debug)
+(def test-addresses (map #(vector (str "10.18.10." %) 6379) (range 1 7)))
+
+(defn cluster-meet-nodes [addresses]
+  (loop [[meet-host meet-port] (first addresses)
+         [[host port] & rest] (drop 1 addresses)]
+    (car/wcar {:spec {:host host :port port}}
+      (car/cluster-meet meet-host meet-port))
+    (when (seq rest)
+      (recur [host port] rest))))
+
+(defn cluster-reset [addresses]
+  (doseq [[host port] addresses]
+    (car/wcar {:spec {:host host :port port}}
+      (car/cluster-reset :soft))))
+
+(defn flush-nodes [addresses]
+  (doseq [[host port] addresses]
+    (car/wcar {:spec {:host host :port port}}
+      (car/flushall))))
+
+(defn recreate-cluster [addresses]
+  (doto addresses
+    (flush-nodes)
+    (cluster-meet-nodes)))
 
 (deftest cluster-tests
-  (testing "client connection"
-    (with-open [client (redis/connect "172.17.0.2" 7002)]
-      (is (= (call client "get" "foo") [nil])))))
+  (testing "a simple GET"
+    (with-open [client (connect "10.18.10.1" 6379)]
+      (is (= "OK" (deref (send-command client ["set" "foo" "bar"]) 1000 :timeout)))
+      (is (= "bar" (deref (send-command client ["get" "foo"]) 1000 :timeout)))))
+  (testing "when a connection is refused"
+    (with-open [client (connect "10.18.10.1" 7000)]
+      (is (instance? clojure.lang.ExceptionInfo (deref (send-command client ["get" "foo"]) 1000 :timeout))))))
+
+(use-fixtures :each without-debug)

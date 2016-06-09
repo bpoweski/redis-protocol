@@ -39,17 +39,19 @@
 
 (defn crc16
   "XMODEM (also known as ZMODEM or CRC-16/ACORN) hash function."
-  [^bytes ba]
-  (let [len (alength ba)]
-    (loop [n   0
-           crc 0]
-      (if (>= n len) crc
-          (recur (inc n)
-                 (bit-xor (bit-and (bit-shift-left crc 8) 0xffff)
-                          (aget xmodem-crc16-lookup
-                                (-> (bit-shift-right crc 8)
-                                    (bit-xor (aget ba n))
-                                    (bit-and 0xff)))))))))
+  ([^bytes ba] (crc16 ba 0 (alength ba)))
+  ([^bytes ba start len]
+   (let [stop (+ start len)]
+     (loop [n   start
+            crc 0]
+       (if (>= n stop)
+         crc
+         (recur (inc n)
+                (bit-xor (bit-and (bit-shift-left crc 8) 0xffff)
+                         (aget xmodem-crc16-lookup
+                               (-> (bit-shift-right crc 8)
+                                   (bit-xor (aget ba n))
+                                   (bit-and 0xff))))))))))
 
 
 (defn bytes= [x y]

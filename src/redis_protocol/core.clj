@@ -4,14 +4,15 @@
             [clojure.java.io :as io]
             [clojure.tools.trace :as t]
             [taoensso.timbre :as timbre]
-            [clojure.core.async :as async])
-  (:import (redis.protocol ReplyParser)
+            [clojure.core.async :as async]
+            [clojure.string :as str])
+  (:import (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer)
            (java.net InetSocketAddress StandardSocketOptions)
            (java.util Arrays ArrayList)
            (java.io Closeable IOException)
            (java.nio ByteBuffer)
            (java.nio.channels AsynchronousSocketChannel CompletionHandler SelectionKey Selector SocketChannel CancelledKeyException)
-           (java.util.concurrent TimeUnit ArrayBlockingQueue BlockingQueue Phaser LinkedTransferQueue ConcurrentLinkedDeque ScheduledThreadPoolExecutor Future)
+           (java.util.concurrent TimeUnit ArrayBlockingQueue BlockingQueue Phaser LinkedTransferQueue ConcurrentLinkedDeque Executors ScheduledThreadPoolExecutor Future)
            (java.util.concurrent.atomic AtomicLong)))
 
 
@@ -21,9 +22,9 @@
 
 (timbre/refer-timbre)
 
+(timbre/set-level! :trace)
+
 (def cluster-hash-slots 16384)
-
-
 
 (defn drain
   "Drains items from q into a new collection."
@@ -84,10 +85,20 @@
     (if (> (count lines) 5)
       (debug "..."))))
 
+(defn moved? [reply]
+  (and (instance? ReplyParser$Error reply)
+       (.startsWith (.message ^ReplyParser$Error reply) "MOVED")))
+
+(defn moved-to [reply]
+  (when (moved? reply)
+    (let [[_ slot address-port] (str/split (.message ^ReplyParser$Error reply) #" " 3)
+          [^String address port] (str/split address-port #":" 2)]
+      [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))])))
+
 (defprotocol Operation
   (return-value [op val]))
 
-(deftype WriteOperation [^long id ^long slot ^ByteBuffer payload prom ^Future fut]
+(deftype WriteOperation [^long id ^long slot ^long redirects ^bytes request ^ByteBuffer payload prom ^Future fut]
   Object
   (toString [_]
     (str "WriteOperation<<id: " id ", length: " (.limit payload) ", remaining: " (.remaining payload) ">>"))
@@ -96,13 +107,16 @@
     (.cancel ^Future fut true)
     (deliver prom val)))
 
-(deftype ReadOperation [^long id ^ReplyParser parser prom ^Future fut]
+(deftype ReadOperation [^long id ^long redirects ^ReplyParser parser prom ^Future fut ^bytes request]
   Object
   (toString [_]
-    (str "ReadOperation<<id: " id ">>"))
+    (str "ReadOperation<<id: " id ", redirects: " redirects ">>"))
   Operation
   (return-value [_ val]
     (.cancel ^Future fut true)
+    (when-not (instance? Throwable val)
+      (doseq [line (.split ^String (util/cli-format val) "\n")]
+        (trace line)))
     (deliver prom val)))
 
 (def ^AtomicLong ^:private op-sequence (AtomicLong.))
@@ -114,15 +128,19 @@
    (let [slot  (if-let [k (args->key args)]
                  (hash-slot (.getBytes k))
                  -1)]
-     (->WriteOperation id slot (ByteBuffer/wrap (.getBytes (args->str args))) prom fut))))
+     (let [request (.getBytes (args->str args))]
+       (->WriteOperation id slot 0 request (ByteBuffer/wrap request) prom fut)))))
+
+(defn redispatch-write [^ReadOperation op slot]
+  (->WriteOperation (.id op) slot (inc (.redirects op)) (.request op) (ByteBuffer/wrap (.request op)) (.prom op) (.fut op)))
 
 (defn write->read [^WriteOperation op]
-  (->ReadOperation (.id op) (ReplyParser.) (.prom op) (.fut op)))
+  (->ReadOperation (.id op) (.redirects op) (ReplyParser.) (.prom op) (.fut op) (.request op)))
 
-(defrecord RedisClient [seeds ^Selector selector connections slot-cache dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
+(defrecord RedisClient [seeds ^Selector selector connections slot-cache ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
   Closeable
   (close [this]
-    (.put dispatch-queue [:shutdown])
+    (.addLast dispatch-queue [:shutdown])
     (.shutdown scheduled-executor)))
 
 (defrecord SocketConnection [^SocketChannel channel ^InetSocketAddress address read-buffer read-queue write-queue]
@@ -156,10 +174,6 @@
     ;; disable Nagle's algorithm
     (->SocketConnection channel address read-buffer read-queue write-queue)))
 
-(defn open [{:keys [^LinkedTransferQueue dispatch-queue] :as client} ^InetSocketAddress address]
-  (.put dispatch-queue [:connect address])
-  client)
-
 (defn incomplete? [^WriteOperation op]
   (.hasRemaining ^ByteBuffer (.payload op)))
 
@@ -187,11 +201,22 @@
        (debug "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
      (.interestOps k new-ops))))
 
+(defn parsed-value [^ReplyParser parser]
+  (.get (.root parser) 0))
+
+(defn dispatch-value [{:keys [^ConcurrentLinkedDeque dispatch-queue] :as client} ^ReadOperation op reply]
+  (if-let [[slot address] (moved-to reply)]
+    (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
+        (.addFirst dispatch-queue [:resolve (redispatch-write op slot) address])
+        ;;(return-value op reply)
+        )
+    (return-value op reply)))
+
 (defn read! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^ConcurrentLinkedDeque read-queue ^ByteBuffer read-buffer] :as conn} (.attachment k)]
-    (.clear read-buffer)
-    (loop [n (.read channel read-buffer)]
+    (loop [n (.read channel (doto read-buffer
+                              (.clear)))]
       (debug "read:" n "bytes")
       (cond
         (= -1 n)  (do (warn "connection closed")
@@ -210,33 +235,11 @@
                           ReplyParser/PARSE_INCOMPLETE (do (debug "waiting for more bytes"))
                           ReplyParser/PARSE_COMPLETE   (do (debug "parse is complete")
                                                            (.removeFirst read-queue)
-                                                           (debug (.root parser))
-                                                           (return-value op (.get (t/trace :root (.root parser)) 0)))
+                                                           (dispatch-value client op (parsed-value parser)))
                           ReplyParser/PARSE_OVERFLOW   (do (debug "overflow of response")
                                                            (.removeFirst read-queue)
-                                                           (debug (.root parser))
-                                                           (return-value op (.get (.root parser) 0))
+                                                           (dispatch-value client op (parsed-value parser))
                                                            (recur (.getFirst read-queue) (.getOverflow parser)))))))))))
-
-(defn maybe-write
-  "Attempts to write the entire op to the connection. If the entire op is unable to be written registers OP_WRITE and re-schedules."
-  [client {:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^ArrayBlockingQueue write-queue] :as conn} ^WriteOperation op]
-  (if (.isConnectionPending channel)
-    (.add write-queue op)
-    (let [n (.write channel ^ByteBuffer (.payload op))]
-      (if (= -1 n)
-        (do (warn "connection closed")
-            (cleanup-connection client conn)
-            (return-value op (ex-info "Connection closed when writing" {:op op})))
-        (let [k (.keyFor channel (.selector client))]
-          (if (complete? op)
-            (do (debug "done writing op")
-                (ignore-op! k OP_WRITE)
-                (set-op! k OP_READ)
-                (.addLast read-queue (write->read op)))
-            (do (debug "op is incomplete")
-                (set-op! k OP_WRITE)
-                (.addFirst write-queue op))))))))
 
 (defn write! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
@@ -290,36 +293,68 @@
 (defmethod dispatch :shutdown [connections {:keys [seeds ^Selector selector] :as client} _]
   (throw shutdown-exception))
 
-(defmethod dispatch :write [connections {:keys [seeds ^Selector selector] :as client} [_ ^WriteOperation op]]
-  (if-let [conns (not-empty @connections)]
-    (let [{:keys [^SocketChannel channel] :as conn} (some val conns)]
-      (maybe-write client conn op))
-    (let [address (rand-seed client)
-          _       (debug "no active connections exist, randomly selecting" address)
-          {:keys [^SocketChannel channel] :as conn} (socket-connection address)
-          _       (swap! connections assoc address conn)]
-      (if (.connect channel address)
-        (do (debug address "can be established immediately, registering" channel "with" (ops->str OP_READ))
-            (.register channel selector OP_READ conn)
-            (maybe-write client conn op))
-        (do (debug address "cannot be established immediately, registering" channel "with" (ops->str OP_CONNECT))
-            (.register channel selector OP_CONNECT conn)
-            (maybe-write client conn op))))))
+(defn- register! [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} ^Selector selector]
+  (if (.connect channel address)
+    (do (debug address "can be established immediately, registering" channel "with" (ops->str OP_READ))
+        (.register channel selector OP_READ conn))
+    (do (debug address "cannot be established immediately, registering" channel "with" (ops->str OP_CONNECT))
+        (.register channel selector OP_CONNECT conn))))
+
+(defn resolve-connection [{:keys [seeds ^Selector selector connections] :as client} address]
+  (or (get @connections address)
+      (let [conn (socket-connection address)]
+        (register! conn selector)
+        (swap! connections assoc address conn)
+        conn)))
+
+(defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache] :as client} [_ ^WriteOperation op addr]]
+  (let [conns            @connections
+        resolved-conn    (if-let [address (or addr (get @slot-cache (.slot op)))]
+                           (resolve-connection client address)
+                           (or (rand-nth (vals conns))
+                               (resolve-connection client (rand-seed client))))]
+    (.addFirst dispatch-queue [:write op resolved-conn])))
+
+(defmethod dispatch :write [connections client [_ ^WriteOperation op conn]]
+  (let [{:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^ArrayBlockingQueue write-queue]} conn]
+    (cond (.isConnectionPending channel)
+          (.add write-queue op)
+
+          (.isConnected channel)
+          (let [n (.write channel ^ByteBuffer (.payload op))]
+            (if (= -1 n)
+              (do (warn "connection closed")
+                  (cleanup-connection client conn)
+                  (return-value op (ex-info "Connection closed when writing" {:op op})))
+              (let [k (.keyFor channel (.selector client))]
+                (if (complete? op)
+                  (do (debug "done writing op")
+                      (ignore-op! k OP_WRITE)
+                      (set-op! k OP_READ)
+                      (.addLast read-queue (write->read op)))
+                  (do (debug "op is incomplete")
+                      (set-op! k OP_WRITE)
+                      (.addFirst write-queue op))))))
+
+          :else
+          (throw (ex-info "Connection is not pending or connected!" {:op op})))))
 
 (defn nio-loop
   "Responsible for managing IO operations of dispatched operations."
-  [{:keys [^Selector selector ^BlockingQueue dispatch-queue connections] :as client}]
+  [{:keys [^Selector selector ^ConcurrentLinkedDeque dispatch-queue connections] :as client}]
   (try
     (loop []
       (if (.isOpen selector)
-        (do (doseq [event (drain dispatch-queue 1024)]
-              (debug "dispatching:" event)
-              (try
-                (dispatch connections client event)
-                (catch Throwable err
-                  (if (= err shutdown-exception)
-                    (throw err)
-                    (error err "caught throwable when dispatching event")))))
+        (do (loop [n 0]
+              (when-let [event (.pollFirst dispatch-queue)]
+                (debug "dispatching:" event)
+                (try
+                  (dispatch connections client event)
+                  (catch Throwable err
+                    (if (= err shutdown-exception)
+                      (throw err)
+                      (error err "caught throwable when dispatching event"))))
+                (recur (inc n))))
 
             (let [n (.select selector 1)]
               (if (> n 0)
@@ -350,26 +385,27 @@
       (.close selector))))
 
 (defn send-command
-  [{:keys [connections ^Selector selector ^BlockingQueue dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor] :as client} args]
+  [{:keys [connections ^Selector selector ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor] :as client} args]
   {:pre [(vector? args)]}
   (let [p           (promise)
-        fut         (.schedule scheduled-executor ^Runnable (fn [] (deliver p (ex-data {:timeout? true}))) 2000 (TimeUnit/MILLISECONDS))
+        timeout     (ex-info "Operation timed out" {:timeout? true :args args})
+        fut         (.schedule scheduled-executor ^Runnable (fn [] (deliver p timeout)) 2000 (TimeUnit/MILLISECONDS))
         write-queue (write-operation args p fut)]
-    (.put dispatch-queue [:write (write-operation args p fut)])
+    (.addLast dispatch-queue [:resolve (write-operation args p fut)])
     p))
 
 (defn connect [host ^long port]
   (let [selector (Selector/open)
         seeds    #{(InetSocketAddress. (str host) port)}
-        executor (doto (ScheduledThreadPoolExecutor. 2) ;; used to handle timeouts
+        executor (doto (ScheduledThreadPoolExecutor. 1) ;; used for timeouts, completing & rerouting operations
                    (.setRemoveOnCancelPolicy true))
-        client   (->RedisClient seeds selector (atom {}) (atom {}) (LinkedTransferQueue.) executor)
+        client   (->RedisClient seeds selector (atom {}) (atom {}) (ConcurrentLinkedDeque.) executor)
         io-fn    (fn []
                    (try
                      (nio-loop client)
                      (catch Exception err
                        (error err))))]
-    (assoc client :io-thread (doto (Thread. io-fn (str "RedisIOThread")) (.start)))))
+    (assoc client :io-thread (doto (Thread. io-fn (str "RedisIO")) (.start)))))
 
 (comment
   (with-open [client (connect "172.17.0.2" 7000)]
@@ -377,11 +413,10 @@
                     (send-command client ["set" "bar" "1"]))]
       (Thread/sleep 100000)))
 
-  (with-open [client (connect "127.0.0.1" 6379)]
-    (let [r1 (send-command client ["get"])
-          r2 (send-command client ["get"])]
-      (println @r1)
-      (println @r2)))
+  (with-open [client (connect "10.18.10.2" 6379)]
+    (let [r1 (send-command client ["get" "foo"])
+          r2 (send-command client ["get" "bar"])]
+      [@r1 @r2]))
 
   (with-open [client (connect "10.18.10.2" 6379)]
     @(send-command client ["cluster" "slots"]))
@@ -390,5 +425,4 @@
     @(send-command client ["cluster" "slots"]))
 
   (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client ["info"]))
-  )
+    @(send-command client ["info"])))

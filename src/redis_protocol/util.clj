@@ -1,5 +1,7 @@
 (ns redis-protocol.util
-  (:import (java.nio ByteBuffer)))
+  (:import (java.nio ByteBuffer)
+           (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer))
+  (:require [clojure.string :as str]))
 
 
 (def ^"[J" ^:private xmodem-crc16-lookup
@@ -59,3 +61,51 @@
 
 (defn buffer= [^ByteBuffer x ^ByteBuffer y]
   (zero? (.compareTo x y)))
+
+(defn parse-str [s]
+  (let [parser (ReplyParser.)
+        state  (.parse parser s)]
+    (if (= state (ReplyParser/PARSE_COMPLETE))
+      (first (.root parser))
+      (throw (ex-info "parse incomplete" {})))))
+
+(def ^:dynamic *cli-print-indent* 0)
+
+(defmulti cli-print
+  "Formats a parser reply similar to the redis-cli output."
+  (fn [x _]
+    (class x)))
+
+(defmethod cli-print ReplyParser$Error [error ^java.io.PrintWriter w]
+  (.println w (str "(error) " (.message error))))
+
+(defmethod cli-print ReplyParser$SimpleString [info ^java.io.PrintWriter w]
+  (.println w (str (.message info))))
+
+(defmethod cli-print String [s ^java.io.PrintWriter w]
+  (.print w \")
+  (.print w s)
+  (.println w \"))
+
+(defmethod cli-print Long [x ^java.io.PrintWriter w]
+  (.print w "(integer) ")
+  (.println w x))
+
+(defmethod cli-print nil [x ^java.io.PrintWriter w]
+  (.println w "(nil)"))
+
+(defmethod cli-print ReplyParser$ArrayContainer [^ReplyParser$ArrayContainer array ^java.io.PrintWriter w]
+  (let [n        (.length array)
+        n-digits (count (str n))]
+    (doseq [[i v] (map-indexed vector array)]
+      (when (pos? i)
+        (.print w (str/join (repeat *cli-print-indent* " "))))
+      (.print w (format (str "%" n-digits "d) ") (inc i)))
+      (binding [*cli-print-indent* (+ *cli-print-indent* n-digits 2)]
+        (cli-print v w)))))
+
+(defn cli-format [reply]
+  (with-open [str-writer (java.io.StringWriter.)
+              print-writer (java.io.PrintWriter. str-writer)]
+    (cli-print reply print-writer)
+    (.toString (.getBuffer str-writer))))

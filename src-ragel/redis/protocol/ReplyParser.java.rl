@@ -8,7 +8,13 @@ action mark {
 }
 
 action delimted_reply {
-  emit(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
+  String delimitedValue = new String(Arrays.copyOfRange(data, mark, fpc - 1));
+
+  if (delimitedReplyType == ERROR_REPLY) {
+    emit(new Error(delimitedValue));
+  } else {
+    emit(new SimpleString(delimitedValue));
+  }
 }
 
 action integer_reply {
@@ -44,6 +50,14 @@ action push_null_array {
   emitNull();
 }
 
+action set_simple {
+  delimitedReplyType = SIMPLE_STRING_REPLY;
+}
+
+action set_error {
+  delimitedReplyType = ERROR_REPLY;
+}
+
 action start_array {
   int len = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
   ArrayContainer arr = new ArrayContainer(len, currentParent);
@@ -63,7 +77,7 @@ action check_end_of_reply {
 crlf               = "\r\n";
 
 # RESP Errors or Simple Strings
-resp_delimited     = ("+" | "-") ( any* -- crlf ) >mark crlf @delimted_reply;
+resp_delimited     = ("+" >set_simple | "-" >set_error) ( any* -- crlf ) >mark crlf @delimted_reply;
 
 # RESP Integers
 resp_integer       = ":" ("-"? digit+) >mark crlf @integer_reply;
@@ -95,6 +109,9 @@ public class ReplyParser {
   public static final int PARSE_COMPLETE    = 2;
   public static final int PARSE_OVERFLOW    = 3;
 
+  public static final int SIMPLE_STRING_REPLY  = 0;
+  public static final int ERROR_REPLY          = 1;
+
   public static final ArrayList<Object> EMPTY_ARRAY = new ArrayList<Object>();
 
   // parser state
@@ -104,6 +121,7 @@ public class ReplyParser {
   private int bulkLength  = -1;
   private int parseState  = PARSE_NOT_STARTED;
   private byte[] data = null;
+  private int delimitedReplyType = -1;
 
   // incremental state
   private int discardMarker = 0;
@@ -117,6 +135,62 @@ public class ReplyParser {
   private int ts;
   private int cs;
   private int act;
+
+  public static class Error {
+    public final String message;
+
+    public Error(final String msg) {
+      if (msg == null) {
+         throw new IllegalArgumentException("message cannot be null!");
+      }
+      this.message = msg;
+    }
+
+    public boolean equals(Object obj) {
+      if (this == obj)
+        return true;
+
+      return (obj instanceof Error && this.message.equals(((Error)obj).message));
+    }
+
+    public int hashCode() {
+      int hash = 7;
+      hash = 13 * this.message.hashCode();
+      return hash;
+    }
+
+    public String toString() {
+      return "-" + message;
+    }
+  }
+
+  public static class SimpleString {
+    public final String message;
+
+    public SimpleString(final String msg) {
+      if (msg == null) {
+         throw new IllegalArgumentException("message cannot be null!");
+      }
+      this.message = msg;
+    }
+
+    public boolean equals(Object obj) {
+      if (this == obj)
+        return true;
+
+      return (obj instanceof SimpleString && this.message.equals(((SimpleString)obj).message));
+    }
+
+    public int hashCode() {
+      int hash = 13;
+      hash = 17 * this.message.hashCode();
+      return hash;
+    }
+
+    public String toString() {
+      return "+" + message;
+    }
+  }
 
   public static class ArrayContainer extends ArrayList<Object> {
     public final int length;

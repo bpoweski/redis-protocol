@@ -1,7 +1,8 @@
 (ns redis-protocol.util-test
   (:require [byte-streams :as bs]
             [clojure.test :refer :all]
-            [redis-protocol.util :refer :all]))
+            [redis-protocol.util :refer :all])
+  (:import (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer)))
 
 
 (deftest crc16-test
@@ -16,3 +17,9 @@
 (deftest buffer=-test
   (is (true? (buffer= (bs/to-byte-buffer "foo") (bs/to-byte-buffer "foo"))))
   (is (false? (buffer= (bs/to-byte-buffer "foo") (bs/to-byte-buffer "foo ")))))
+
+(deftest cli-format-test
+  (is (= "(error) MOVED 12182 10.18.10.5:6379\n" (cli-format (ReplyParser$Error. "MOVED 12182 10.18.10.5:6379"))))
+  (is (= "OK\n" (cli-format (ReplyParser$SimpleString. "OK"))))
+  (is (= "1) (integer) 10923\n" (cli-format (doto (ReplyParser$ArrayContainer. 1) (.add 10923)))))
+  (is (= "(nil)\n" (cli-format nil))))

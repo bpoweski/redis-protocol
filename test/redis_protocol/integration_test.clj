@@ -2,7 +2,7 @@
   (:require [clojure.test :refer :all :exclude [report]]
             [redis-protocol.core :refer :all]
             [taoensso.timbre :as timbre])
-  (:import (redis.protocol ReplyParser ReplyParser$SimpleString)))
+  (:import (redis.resp ReplyParser)))
 
 
 (timbre/refer-timbre)
@@ -20,7 +20,7 @@
 (deftest cluster-tests
   (testing "a simple GET"
     (with-open [client (connect "10.18.10.1" 6379)]
-      (is (= (ReplyParser$SimpleString. "OK") (deref (send-command client ["set" "foo" "bar"]) 1000 :timeout)))
+      (is (= (redis.resp.SimpleString. "OK") (deref (send-command client ["set" "foo" "bar"]) 1000 :timeout)))
       (is (= "bar" (deref (send-command client ["get" "foo"]) 1000 :timeout)))))
   (testing "when a connection is refused"
     (with-open [client (connect "10.18.10.1" 7000)]

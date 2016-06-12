@@ -1,6 +1,16 @@
 # redis-protocol
 
-A Clojure library designed to ... well, that part is up to you.
+A Redis Cluster Clojure library based on NIO. An (incomplete) work in progress.
+
+## Rationale
+
+## Tasks
+
+* MOVED redirection
+* ASK redirection
+* Connection slot cache
+* Connection keep-alive
+* Benchmark vs Jedis
 
 ## Usage
 

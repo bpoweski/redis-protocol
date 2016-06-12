@@ -6,7 +6,7 @@
             [taoensso.timbre :as timbre]
             [clojure.core.async :as async]
             [clojure.string :as str])
-  (:import (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer)
+  (:import (redis.resp ReplyParser)
            (java.net InetSocketAddress StandardSocketOptions)
            (java.util Arrays ArrayList)
            (java.io Closeable IOException)
@@ -86,12 +86,12 @@
       (debug "..."))))
 
 (defn moved? [reply]
-  (and (instance? ReplyParser$Error reply)
-       (.startsWith (.message ^ReplyParser$Error reply) "MOVED")))
+  (and (instance? redis.resp.Error reply)
+       (.startsWith (.message ^redis.resp.Error reply) "MOVED")))
 
 (defn moved-to [reply]
   (when (moved? reply)
-    (let [[_ slot address-port] (str/split (.message ^ReplyParser$Error reply) #" " 3)
+    (let [[_ slot address-port] (str/split (.message ^redis.resp.Error reply) #" " 3)
           [^String address port] (str/split address-port #":" 2)]
       [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))])))
 

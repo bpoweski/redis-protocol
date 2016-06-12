@@ -1,15 +1,15 @@
 (ns redis-protocol.parser-test
   (:require [clojure.test :refer :all]
             [redis-protocol.util :as util :refer [parse-str]])
-  (:import (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString)))
+  (:import (redis.resp ReplyParser)))
 
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
-    (is (= (parse-str "+OK\r\n") (ReplyParser$SimpleString. "OK"))))
+    (is (= (parse-str "+OK\r\n") (redis.resp.SimpleString. "OK"))))
   (testing "RESP Errors"
-    (is (= (parse-str "-Error message\r\n") (ReplyParser$Error. "Error message")))
-    (is (= (parse-str "-ERR wrong number of arguments for 'get' command\r\n") (ReplyParser$Error. "ERR wrong number of arguments for 'get' command"))))
+    (is (= (parse-str "-Error message\r\n") (redis.resp.Error. "Error message")))
+    (is (= (parse-str "-ERR wrong number of arguments for 'get' command\r\n") (redis.resp.Error. "ERR wrong number of arguments for 'get' command"))))
   (testing "RESP Integers"
     (is (= (parse-str ":1\r\n") 1))
     (is (= (parse-str ":10\r\n") 10))
@@ -28,7 +28,7 @@
     (is (= (parse-str "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n") ["foo" "bar"]))
     (is (= (parse-str "*3\r\n:1\r\n:2\r\n:3\r\n") [1 2 3]))
     (is (= (parse-str "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n") [1 2 3 4 "foobar"]))
-    (is (= (parse-str "*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n") [[1 2 3] [(ReplyParser$SimpleString. "Foo") (ReplyParser$Error. "Bar")]]))
+    (is (= (parse-str "*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n") [[1 2 3] [(redis.resp.SimpleString. "Foo") (redis.resp.Error. "Bar")]]))
     (is (= (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") ["foo" nil "bar"])))
   (testing "Overflowing a response"
     (let [parser (ReplyParser.)]

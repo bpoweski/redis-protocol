@@ -4,7 +4,7 @@
             [redis-protocol.util :as util]
             [byte-streams :as bs]
             [taoensso.timbre :as timbre])
-  (:import (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer)
+  (:import (redis.resp ReplyParser SimpleString Array)
            (java.net InetSocketAddress)))
 
 
@@ -27,13 +27,13 @@
 (deftest moved-test
   (is (false? (moved? nil)))
   (is (false? (moved? "OK")))
-  (is (false? (moved? (ReplyParser$Error. "ERR unknown command 'foobar'"))))
-  (is (true? (moved? (ReplyParser$Error. "MOVED 3999 127.0.0.1:6381")))))
+  (is (false? (moved? (redis.resp.Error. "ERR unknown command 'foobar'"))))
+  (is (true? (moved? (redis.resp.Error. "MOVED 3999 127.0.0.1:6381")))))
 
 (deftest moved-to-test
   (is (nil? (moved-to nil)))
   (is (nil? (moved-to "OK")))
-  (is (= (moved-to (ReplyParser$Error. "MOVED 3999 127.0.0.1:6381")) [3999 (InetSocketAddress. "127.0.0.1" 6381)])))
+  (is (= (moved-to (redis.resp.Error. "MOVED 3999 127.0.0.1:6381")) [3999 (InetSocketAddress. "127.0.0.1" 6381)])))
 
 (deftest hash-slot-test
   (is (= 0 (hash-slot (.getBytes ""))))

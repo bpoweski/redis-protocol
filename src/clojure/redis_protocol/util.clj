@@ -1,6 +1,6 @@
 (ns redis-protocol.util
   (:import (java.nio ByteBuffer)
-           (redis.protocol ReplyParser ReplyParser$Error ReplyParser$SimpleString ReplyParser$ArrayContainer))
+           (redis.resp ReplyParser))
   (:require [clojure.string :as str]))
 
 
@@ -76,10 +76,10 @@
   (fn [x _]
     (class x)))
 
-(defmethod cli-print ReplyParser$Error [error ^java.io.PrintWriter w]
+(defmethod cli-print redis.resp.Error [error ^java.io.PrintWriter w]
   (.println w (str "(error) " (.message error))))
 
-(defmethod cli-print ReplyParser$SimpleString [info ^java.io.PrintWriter w]
+(defmethod cli-print redis.resp.SimpleString [info ^java.io.PrintWriter w]
   (.println w (str (.message info))))
 
 (defmethod cli-print String [s ^java.io.PrintWriter w]
@@ -94,7 +94,7 @@
 (defmethod cli-print nil [x ^java.io.PrintWriter w]
   (.println w "(nil)"))
 
-(defmethod cli-print ReplyParser$ArrayContainer [^ReplyParser$ArrayContainer array ^java.io.PrintWriter w]
+(defmethod cli-print redis.resp.Array [^redis.resp.Array array ^java.io.PrintWriter w]
   (let [n        (.length array)
         n-digits (count (str n))]
     (doseq [[i v] (map-indexed vector array)]

@@ -60,7 +60,7 @@ action set_error {
 
 action start_array {
   int len = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
-  ArrayContainer arr = new ArrayContainer(len, currentParent);
+  Array arr = new Array(len, currentParent);
   emit(arr);
 }
 
@@ -95,9 +95,12 @@ main := ( (resp_delimited | resp_integer | resp_bulk | resp_array_header) %check
 
 }%%
 
-package redis.protocol;
+package redis.resp;
 
 import java.util.*;
+import redis.resp.SimpleString;
+import redis.resp.Array;
+import redis.resp.Error;
 
 public class ReplyParser {
   // heavily inspired by this great tutorial
@@ -115,8 +118,8 @@ public class ReplyParser {
   public static final ArrayList<Object> EMPTY_ARRAY = new ArrayList<Object>();
 
   // parser state
-  public final ArrayContainer root;
-  private ArrayContainer currentParent;
+  public final Array root;
+  private Array currentParent;
   private int mark = 0;
   private int bulkLength  = -1;
   private int parseState  = PARSE_NOT_STARTED;
@@ -136,117 +139,6 @@ public class ReplyParser {
   private int cs;
   private int act;
 
-  public static class Error {
-    public final String message;
-
-    public Error(final String msg) {
-      if (msg == null) {
-         throw new IllegalArgumentException("message cannot be null!");
-      }
-      this.message = msg;
-    }
-
-    public boolean equals(Object obj) {
-      if (this == obj)
-        return true;
-
-      return (obj instanceof Error && this.message.equals(((Error)obj).message));
-    }
-
-    public int hashCode() {
-      int hash = 7;
-      hash = 13 * this.message.hashCode();
-      return hash;
-    }
-
-    public String toString() {
-      return "-" + message;
-    }
-  }
-
-  public static class SimpleString {
-    public final String message;
-
-    public SimpleString(final String msg) {
-      if (msg == null) {
-         throw new IllegalArgumentException("message cannot be null!");
-      }
-      this.message = msg;
-    }
-
-    public boolean equals(Object obj) {
-      if (this == obj)
-        return true;
-
-      return (obj instanceof SimpleString && this.message.equals(((SimpleString)obj).message));
-    }
-
-    public int hashCode() {
-      int hash = 13;
-      hash = 17 * this.message.hashCode();
-      return hash;
-    }
-
-    public String toString() {
-      return "+" + message;
-    }
-  }
-
-  public static class ArrayContainer extends ArrayList<Object> {
-    public final int length;
-    public final ArrayContainer parent;
-
-    public ArrayContainer(int length, ArrayContainer parent) {
-      super(length);
-      this.length = length;
-      this.parent = parent;
-    }
-
-    public ArrayContainer(int length) {
-      super(length);
-      this.length = length;
-      this.parent = null;
-    }
-
-    public boolean isFull() {
-      return size() >= length;
-    }
-
-    public boolean isComplete() {
-      if (!isFull()) {
-        return false;
-      }
-
-      for (Object x : this) {
-        if (x instanceof ArrayContainer) {
-          ArrayContainer arrayElement = (ArrayContainer)x;
-
-          if (!arrayElement.isComplete()) {
-            return false;
-          }
-        }
-      }
-
-      return true;
-    }
-
-    public boolean addItem(Object value) {
-      if (isFull()) {
-        throw new RuntimeException("Container is full!");
-      }
-
-      return add(value);
-    }
-
-    public String toString() {
-      if (parent == null) {
-          return  "<Root length: " + length + ", " + super.toString() + ">";
-      } else {
-        return  "<Child length: " + length + ", " + super.toString() + ">";
-      }
-    }
-  }
-
   %% write data;
 
   public ReplyParser() {
@@ -255,7 +147,7 @@ public class ReplyParser {
 
   public ReplyParser(int replies) {
     %% write init;
-    root = new ArrayContainer(1);
+    root = new Array(1);
     currentParent = root;
   }
 
@@ -309,7 +201,7 @@ public class ReplyParser {
     }
   }
 
-  public void emit(ArrayContainer newMultiBulk) {
+  public void emit(Array newMultiBulk) {
     currentParent.addItem(newMultiBulk);
     currentParent = newMultiBulk;
     popMultiBulk();

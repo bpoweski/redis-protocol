@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -29,8 +29,9 @@ create-volumes() {
         cat << EOF > $DIR/volumes/node-${node}/config.conf
 port 6379
 cluster-enabled yes
-cluster-config-file nodes.conf
+cluster-config-file /data/nodes.conf
 cluster-node-timeout 5000
+cluster-require-full-coverage no
 dir /data
 EOF
 
@@ -41,7 +42,7 @@ start-nodes() {
     echo "creating containers..."
     for node in $NODES
     do
-        docker run -d --net dmr --ip 10.18.10.${node} -v "$DIR/volumes/node-${node}:/redis-config" $IMAGE /redis-config/config.conf
+        docker run -d --net dmr --ip 10.18.10.${node} -v "$DIR/volumes/node-${node}:/redis-config" $IMAGE redis-server /redis-config/config.conf
     done
 }
 
@@ -72,6 +73,7 @@ case "$1" in
 
     restart)
         stop-nodes
+        create-volumes
         start-nodes
         ;;
     setup)

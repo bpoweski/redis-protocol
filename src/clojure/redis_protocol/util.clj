@@ -1,7 +1,9 @@
 (ns redis-protocol.util
+  (:require [clojure.string :as str]
+            [clojure.java.io :as io])
   (:import (java.nio ByteBuffer)
-           (redis.resp ReplyParser))
-  (:require [clojure.string :as str]))
+           (redis.resp ReplyParser)
+           (java.net InetSocketAddress)))
 
 
 (def ^"[J" ^:private xmodem-crc16-lookup
@@ -109,3 +111,29 @@
               print-writer (java.io.PrintWriter. str-writer)]
     (cli-print reply print-writer)
     (.toString (.getBuffer str-writer))))
+
+(defn parse-cluster-info [s]
+  (->> #"\r\n"
+       (str/split s)
+       (map #(str/split % #":"))
+       (into {})))
+
+(defn parse-cluster-node [s]
+  (let [[id ip-port flags master ping-sent pong-recv config-epoch link-state slots] (str/split s #" " 9)
+        [ip port] (str/split ip-port #":")]
+    {:redis/id           id
+     :redis/address      (InetSocketAddress. ip (Integer/parseInt port))
+     :redis/flags        (->> (str/split flags #",")
+                              (map keyword)
+                              (into #{}))
+     :redis/slots        slots
+     :redis/ping-sent    (Long/parseLong ping-sent)
+     :redis/pong-recv    (Long/parseLong pong-recv)
+     :redis/config-epoch (Long/parseLong config-epoch)
+     :redis/link-state   (keyword link-state)}))
+
+(defn parse-cluster-nodes [s]
+  (->> (java.io.StringReader. s)
+       io/reader
+       line-seq
+       (map parse-cluster-node)))

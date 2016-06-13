@@ -207,9 +207,7 @@
 (defn dispatch-value [{:keys [^ConcurrentLinkedDeque dispatch-queue] :as client} ^ReadOperation op reply]
   (if-let [[slot address] (moved-to reply)]
     (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
-        (.addFirst dispatch-queue [:resolve (redispatch-write op slot) address])
-        ;;(return-value op reply)
-        )
+        (.addFirst dispatch-queue [:resolve (redispatch-write op slot) address]))
     (return-value op reply)))
 
 (defn read! [client ^SelectionKey k]
@@ -420,6 +418,9 @@
 
   (with-open [client (connect "10.18.10.2" 6379)]
     @(send-command client ["cluster" "slots"]))
+
+  (with-open [client (connect "10.18.10.2" 6379)]
+    @(send-command client ["cluster" "nodes"]))
 
   (with-open [client (connect "10.18.10.2" 7000)]
     @(send-command client ["cluster" "slots"]))

@@ -31,6 +31,8 @@
     (is (= (parse-str "*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n") [[1 2 3] [(redis.resp.SimpleString. "Foo") (redis.resp.Error. "Bar")]]))
     (is (= (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") ["foo" nil "bar"])))
   (testing "Overflowing a response"
+    (let [parser (ReplyParser. 2)]
+      (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))
     (let [parser (ReplyParser.)]
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
       (is (util/bytes= (.getOverflow parser) (.getBytes "+O"))))))

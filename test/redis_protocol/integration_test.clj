@@ -74,6 +74,11 @@
        (testing ~desc
          ~@body)))
 
+(defn to-spec [^InetSocketAddress address]
+  {:spec {:host (.getHostAddress (.getAddress address)) :port (.getPort address)}})
+
+(timbre/set-level! :trace)
+
 (deftest cluster-test
   (recreate-cluster)
   (with-empty-cluster "commands during a stable configuration"
@@ -84,17 +89,36 @@
   (with-empty-cluster "when a key ASK redirection to be found"
     (let [spec          {:spec {:host "10.18.10.1" :port 6379}}
           cluster-nodes (util/parse-cluster-nodes (car/wcar spec (car/cluster-nodes)))
-          {:keys [:redis/id :redis/address] :as next-node} (some #(when (= (:redis/address %) (InetSocketAddress. "10.18.10.2" 6379)) %) cluster-nodes)
-          host (.getHostAddress (.getAddress address))
-          port (.getPort address)]
-      (clojure.pprint/pprint next-node)
-      (car/wcar spec
-        (car/set "foo" "bar")
-        (car/cluster-setslot 12182 :migrating id)
-        (car/migrate host port "" 0 :KEYS "foo")))
+          {:as source-node} (some #(when (= (:redis/address %) (InetSocketAddress. "10.18.10.1" 6379)) %) cluster-nodes)
+          {:as destination-node} (some #(when (= (:redis/address %) (InetSocketAddress. "10.18.10.2" 6379)) %) cluster-nodes)]
 
-    (with-open [client (connect "10.18.10.1" 6379)]
-      )))
+      (car/wcar spec
+        (car/set "foo" "bar"))
+
+      ;; step 1
+      (car/wcar (to-spec (:redis/address destination-node))
+        (car/cluster-setslot 12182 :importing (:redis/id source-node)))
+
+      (car/wcar (to-spec (:redis/address source-node))
+        ;; step 2
+        (car/cluster-setslot 12182 :migrating (:redis/id destination-node)))
+
+      ;; step 3 - get keys
+
+      (car/wcar (to-spec (:redis/address source-node))
+        (car/migrate "10.18.10.2" 6379 "" 0 5000 :KEYS "foo"))
+
+      (with-open [client (connect "10.18.10.2" 6379)]
+        (is (= "bar" (call client "get" "foo"))))
+
+      ;; 4
+      ;; (car/wcar (to-spec (:redis/address source-node))
+      ;;   (car/cluster-setslot 12182 :NODE (:redis/id destination-node)))
+
+      ;; (car/wcar (to-spec (:redis/address destination-node))
+      ;;   (car/cluster-setslot 12182 :NODE (:redis/id destination-node)))
+      ))
+  )
 
 (deftest invalid-connection-test
   (testing "when a connection is refused"

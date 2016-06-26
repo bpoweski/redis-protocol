@@ -147,7 +147,7 @@ public class ReplyParser {
 
   public ReplyParser(int replies) {
     %% write init;
-    root = new Array(1);
+    root = new Array(replies);
     currentParent = root;
   }
 

@@ -30,10 +30,9 @@
   (is (false? (moved? (redis.resp.Error. "ERR unknown command 'foobar'"))))
   (is (true? (moved? (redis.resp.Error. "MOVED 3999 127.0.0.1:6381")))))
 
-(deftest moved-to-test
-  (is (nil? (moved-to nil)))
-  (is (nil? (moved-to "OK")))
-  (is (= (moved-to (redis.resp.Error. "MOVED 3999 127.0.0.1:6381")) [3999 (InetSocketAddress. "127.0.0.1" 6381)])))
+(deftest rerouted-to-test
+  (is (= (rerouted-to (redis.resp.Error. "MOVED 3999 127.0.0.1:6381")) [3999 (InetSocketAddress. "127.0.0.1" 6381)]))
+  (is (= (rerouted-to (redis.resp.Error. "ASK 3999 127.0.0.1:6381")) [3999 (InetSocketAddress. "127.0.0.1" 6381)])))
 
 (deftest hash-slot-test
   (is (= 0 (hash-slot (.getBytes ""))))
@@ -41,3 +40,6 @@
   (is (= 12739 (hash-slot (.getBytes "super-long-key{123456789}"))))
   (is (= 0 (hash-slot (.getBytes "super-long-key{}"))))
   (is (= 4092 (hash-slot (.getBytes "{")))))
+
+(deftest flip-test
+  (testing "WriteRead"))

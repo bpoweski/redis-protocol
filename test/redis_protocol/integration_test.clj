@@ -16,7 +16,10 @@
   (timbre/set-level! :debug))
 
 (defn call [client & args]
-  (deref (send-command client (vec args)) 1000 :timeout))
+  (let [x (deref (send-command client (vec args)) 1000 :timeout)]
+    (if (= (Class/forName "[B") (type x))
+      (String. x)
+      x)))
 
 (def test-addresses (map #(vector (str "10.18.10." %) 6379) (range 1 7)))
 
@@ -86,7 +89,7 @@
       (is (nil? (call client "get" "foo")))
       (is (= (redis.resp.SimpleString. "OK") (call client "set" "foo" "bar")))
       (is (= "bar" (call client "get" "foo")))))
-  (with-empty-cluster "when a key ASK redirection to be found"
+  (with-empty-cluster "when an ASK redirection is needed to find the key"
     (let [spec          {:spec {:host "10.18.10.1" :port 6379}}
           cluster-nodes (util/parse-cluster-nodes (car/wcar spec (car/cluster-nodes)))
           {:as source-node} (some #(when (= (:redis/address %) (InetSocketAddress. "10.18.10.1" 6379)) %) cluster-nodes)
@@ -104,7 +107,6 @@
         (car/cluster-setslot 12182 :migrating (:redis/id destination-node)))
 
       ;; step 3 - get keys
-
       (car/wcar (to-spec (:redis/address source-node))
         (car/migrate "10.18.10.2" 6379 "" 0 5000 :KEYS "foo"))
 
@@ -112,13 +114,11 @@
         (is (= "bar" (call client "get" "foo"))))
 
       ;; 4
-      ;; (car/wcar (to-spec (:redis/address source-node))
-      ;;   (car/cluster-setslot 12182 :NODE (:redis/id destination-node)))
+      (car/wcar (to-spec (:redis/address source-node))
+        (car/cluster-setslot 12182 :NODE (:redis/id destination-node)))
 
-      ;; (car/wcar (to-spec (:redis/address destination-node))
-      ;;   (car/cluster-setslot 12182 :NODE (:redis/id destination-node)))
-      ))
-  )
+      (car/wcar (to-spec (:redis/address destination-node))
+        (car/cluster-setslot 12182 :NODE (:redis/id destination-node))))))
 
 (deftest invalid-connection-test
   (testing "when a connection is refused"

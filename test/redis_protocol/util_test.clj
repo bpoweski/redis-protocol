@@ -8,13 +8,18 @@
 
 
 (deftest crc16-test
-  (is (= (crc16 (.getBytes "user1000")) (crc16 (.getBytes "user1000"))))
-  (is (= 0x0 (crc16 (.getBytes ""))))
-  (is (= 0x31c3 (crc16 (.getBytes "123456789"))))
-  (is (= 0x31c3 (crc16 (.getBytes "{123456789}") 1 9)))
-  (is (= 0xa45c (crc16 (.getBytes "sfger132515"))))
-  (is (= 0x58ce (crc16 (.getBytes "hae9Napahngaikeethievubaibogiech"))))
-  (is (= 0x4fd6 (crc16 (.getBytes "Hello, World!")))))
+  (is (= (crc16 (ascii-bytes "user1000")) (crc16 (ascii-bytes "user1000"))))
+  (is (= 0x0 (crc16 (ascii-bytes ""))))
+  (is (= 0x31c3 (crc16 (ascii-bytes "123456789"))))
+  (is (= 0x31c3 (crc16 (ascii-bytes "{123456789}") 1 9)))
+  (is (= 0xa45c (crc16 (ascii-bytes "sfger132515"))))
+  (is (= 0x58ce (crc16 (ascii-bytes "hae9Napahngaikeethievubaibogiech"))))
+  (is (= 0x4fd6 (crc16 (ascii-bytes "Hello, World!")))))
+
+(deftest to-bytes-test
+  (is (bytes= (ascii-bytes "string") (to-bytes "string")))
+  (is (bytes= "SET" :SET))
+  (is (bytes= "SET" (ascii-bytes "SET"))))
 
 (deftest buffer=-test
   (is (true? (buffer= (bs/to-byte-buffer "foo") (bs/to-byte-buffer "foo"))))

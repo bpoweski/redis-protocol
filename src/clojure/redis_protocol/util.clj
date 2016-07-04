@@ -58,8 +58,25 @@
                                    (bit-and 0xff))))))))))
 
 
+(def utf8-charset (java.nio.charset.Charset/forName "UTF-8"))
+
+(defprotocol ByteSource
+  (to-bytes [this]))
+
+(extend-protocol ByteSource
+  String
+  (to-bytes [this] (.getBytes this utf8-charset))
+
+  clojure.lang.Keyword
+  (to-bytes [kw] (to-bytes (name kw))))
+
+;; Refer: [Google Group Discussion](https://groups.google.com/forum/#!topic/clojure/cioMCdArsKw)
+(extend-type (Class/forName "[B")
+  ByteSource
+  (to-bytes ([this] this)))
+
 (defn bytes= [x y]
-  (java.util.Arrays/equals x y))
+  (java.util.Arrays/equals (to-bytes x) (to-bytes y)))
 
 (defn buffer= [^ByteBuffer x ^ByteBuffer y]
   (zero? (.compareTo x y)))
@@ -70,6 +87,12 @@
     (if (= state (ReplyParser/PARSE_COMPLETE))
       (first (.root parser))
       (throw (ex-info "parse incomplete" {})))))
+
+(defn ascii-bytes [s]
+  (.getBytes s (java.nio.charset.Charset/forName "ASCII")))
+
+(defn utf-16le-bytes [s]
+  (.getBytes s (java.nio.charset.Charset/forName "UTF-16LE")))
 
 (def ^:dynamic *cli-print-indent* 0)
 

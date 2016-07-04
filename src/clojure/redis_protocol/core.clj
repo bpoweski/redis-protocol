@@ -42,13 +42,32 @@
 
 ;; http://rox-xmlrpc.sourceforge.net/niotut/#The client
 
+(def ascii-charset (java.nio.charset.Charset/forName "ASCII"))
 
-;; for now pretend charset encoding is not relevant
-(defn encode-str [s]
-  (apply str "$" (count s) "\r\n" s "\r\n"))
+(defn arg-length [^bytes ba]
+  (+ 1 (count (str (alength ba))) 2 (alength ba) 2))
 
-(defn ^String args->str [args]
-  (apply str "*" (count args) "\r\n" (map encode-str args)))
+(defn resp-prefix [ch x]
+  (.getBytes (str ch x "\r\n") ascii-charset))
+
+(defn args->bytes
+  "Encodes a vector of values into the corresponding length encoded Redis format."
+  [args]
+  {:pre [(vector? args)]}
+  (let [prefix       (resp-prefix \* (count args))
+        byte-arrays  (map util/to-bytes args)
+        total-bytes  (apply + (alength prefix) (map arg-length byte-arrays))
+        result       (byte-array total-bytes prefix)]
+    (loop [[ba & more] byte-arrays
+           pos         (alength prefix)]
+      (let [ba-prefix (resp-prefix \$ (alength ba))]
+        (System/arraycopy ba-prefix 0 result pos (alength ba-prefix))
+        (System/arraycopy ba 0 result (+ pos (alength ba-prefix)) (alength ba))
+        (aset-byte result (+ pos (alength ba-prefix) (alength ba)) \return)
+        (aset-byte result (+ pos (alength ba-prefix) (alength ba) 1) \newline)
+        (when (seq more)
+          (recur more (+ pos (alength ba-prefix) (alength ba) 2)))))
+    result))
 
 ;; naive implementation
 (defn args->key [[command & rest]]
@@ -89,8 +108,34 @@
     (if (> (count lines) 5)
       (debug "..."))))
 
+(defn error? [reply]
+  (instance? redis.resp.Error reply))
+
+(defn error-prefix? [^redis.resp.Error error prefix]
+  (.startsWith (.message error) prefix))
+
+(defn moved? [reply]
+  (and (error? reply)
+       (error-prefix? reply "MOVED")))
+
+(defn ask? [reply]
+  (and (error? reply)
+       (error-prefix? reply "ASK")))
+
+(defn reroute? [reply]
+  (or (moved? reply)
+      (ask? reply)))
+
+(defn rerouted-to
+  [reply]
+  {:pre [(or (moved? reply) (ask? reply))]}
+  (let [[_ slot address-port] (str/split (.message ^redis.resp.Error reply) #" " 3)
+        [^String address port] (str/split address-port #":" 2)]
+    [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))]))
+
 (defprotocol ReadOperation
-  (parse [this ^ByteBuffer buffer]))
+  (parse [this ^ByteBuffer buffer])
+  (complete [this client]))
 
 (defprotocol WriteOperation
   (flip [this]))
@@ -121,6 +166,16 @@
   (parse [_ buffer]
     (let [outcome (.parse parser ^bytes buffer)]
       [outcome (when (= (ReplyParser/PARSE_OVERFLOW) (.getOverflow parser)))]))
+  (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
+    (let [reply (.get (.root (.parser op)) 0)]
+      (if (reroute? reply)
+        (let [[slot address] (rerouted-to reply)]
+          (if (moved? reply)
+            (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
+                (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
+            (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
+                (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
+        (op reply))))
   clojure.lang.IFn
   (invoke [this val]
     (write val)
@@ -134,6 +189,17 @@
   (parse [_ buffer]
     (let [outcome (.parse parser ^bytes buffer)]
       [outcome (when (= (ReplyParser/PARSE_OVERFLOW) (.getOverflow parser)))]))
+  (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
+    (let [ask-reply (.get (.root parser) 0)
+          reply     (.get (.root parser) 1)]
+      (if (reroute? reply)
+        (let [[slot address] (rerouted-to reply)]
+          (if (moved? reply)
+            (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
+                (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
+            (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
+                (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
+        (op reply))))
   clojure.lang.IFn
   (invoke [this val]
     (write val)
@@ -156,7 +222,7 @@
   AskingWriteOperation
   (flip [this] (->AskingReadOperation this (ReplyParser. 2))))
 
-(def ask-bytes (.getBytes (args->str ["ASK"])))
+(def asking-bytes (args->bytes [:ASKING]))
 
 (extend-protocol RetryableOperation
   SingleReadOperation
@@ -167,8 +233,8 @@
     (let [^SingleWriteOperation op (.write this)
           n-redirects (inc (.redirects op))
           ba (.request op)
-          byte-buffer (doto (ByteBuffer/allocate (+ (count ask-bytes) (count ba)))
-                        (.put ask-bytes)
+          byte-buffer (doto (ByteBuffer/allocate (+ (count asking-bytes) (count ba)))
+                        (.put asking-bytes)
                         (.put ba)
                         (.flip))]
       (->AskingWriteOperation (.slot op) n-redirects ba byte-buffer (.action op) (.fut op)))))
@@ -178,17 +244,8 @@
   (let [slot  (if-let [k (args->key args)]
                 (hash-slot (.getBytes ^String k))
                 -1)]
-    (let [request (.getBytes (args->str args))]
+    (let [request (args->bytes args)]
       (->SingleWriteOperation slot 0 request (ByteBuffer/wrap request) action timeout-fut))))
-
-;; (defn read->write [^SingleReadOperation op slot]
-;;   (->SingleWriteOperation slot (inc (.redirects op)) (.request op) (ByteBuffer/wrap (.request op)) (.action op) (.fut op)))
-
-;; (defn read->ask+write [^SingleReadOperation op slot]
-;;   (->AskingWriteOperation slot (inc (.redirects op)) (.request op) (ByteBuffer/wrap (.request op)) (.action op) (.fut op)))
-
-;; (defn write->read [^SingleWriteOperation op]
-;;   (->SingleReadOperation (.slot op) (.redirects op) (ReplyParser.) (.action op) (.fut op) (.request op)))
 
 (defrecord RedisClient [seeds ^Selector selector connections slot-cache ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
   Closeable
@@ -249,31 +306,6 @@
        (debug "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
      (.interestOps k new-ops))))
 
-(defn error? [reply]
-  (instance? redis.resp.Error reply))
-
-(defn error-prefix? [^redis.resp.Error error prefix]
-  (.startsWith (.message error) prefix))
-
-(defn moved? [reply]
-  (and (error? reply)
-       (error-prefix? reply "MOVED")))
-
-(defn ask? [reply]
-  (and (error? reply)
-       (error-prefix? reply "ASK")))
-
-(defn reroute? [reply]
-  (or (moved? reply)
-      (ask? reply)))
-
-(defn rerouted-to
-  [reply]
-  {:pre [(or (moved? reply) (ask? reply))]}
-  (let [[_ slot address-port] (str/split (.message ^redis.resp.Error reply) #" " 3)
-        [^String address port] (str/split address-port #":" 2)]
-    [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))]))
-
 (defn route-complete-op [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
   (let [reply (.get (.root (.parser op)) 0)]
     (if (reroute? reply)
@@ -311,7 +343,7 @@
                               (= (ReplyParser/PARSE_COMPLETE) outcome))
                           (do (trace "parse is complete")
                               (.removeFirst read-queue)
-                              (route-complete-op op client)
+                              (complete op client)
                               (when (= ReplyParser/PARSE_OVERFLOW outcome)
                                 (trace "overflow of response")
                                 (recur (.getFirst read-queue) overflow)))

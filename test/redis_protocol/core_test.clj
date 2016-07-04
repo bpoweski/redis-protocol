@@ -8,13 +8,11 @@
            (java.net InetSocketAddress)))
 
 
-(deftest args->str-test
+(deftest args->bytes-test
   (testing "SET key value"
-    (is (= (args->str ["SET" "key" "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"))))
-
-(deftest encode-str-test
-  (testing "SET"
-    (is (= (encode-str "SET") "$3\r\nSET\r\n"))))
+    (is (util/bytes= (args->bytes ["SET" "key" "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"))
+    (is (util/bytes= (args->bytes [:SET "key" "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"))
+    (is (not (util/bytes= (args->bytes [:SET (util/utf-16le-bytes "key") "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n")))))
 
 (deftest ops->str-test
   (is (= "[---]" (ops->str 0)))

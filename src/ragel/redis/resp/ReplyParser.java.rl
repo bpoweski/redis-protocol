@@ -39,7 +39,7 @@ action bulk_reply_content_start {
 }
 
 action bulk_reply {
-  emit(new String(Arrays.copyOfRange(data, mark, mark + bulkLength)));
+  emit(Arrays.copyOfRange(data, mark, mark + bulkLength));
 }
 
 action push_empty_array {

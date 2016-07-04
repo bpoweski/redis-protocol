@@ -6,50 +6,37 @@
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
-    (is (= (parse-str "+OK\r\n") (redis.resp.SimpleString. "OK"))))
+    (is (= (redis.resp.SimpleString. "OK") (parse-str "+OK\r\n"))))
   (testing "RESP Errors"
-    (is (= (parse-str "-Error message\r\n") (redis.resp.Error. "Error message")))
-    (is (= (parse-str "-ERR wrong number of arguments for 'get' command\r\n") (redis.resp.Error. "ERR wrong number of arguments for 'get' command"))))
+    (is (= (redis.resp.Error. "Error message") (parse-str "-Error message\r\n")))
+    (is (= (redis.resp.Error. "ERR wrong number of arguments for 'get' command") (parse-str "-ERR wrong number of arguments for 'get' command\r\n"))))
   (testing "RESP Integers"
-    (is (= (parse-str ":1\r\n") 1))
-    (is (= (parse-str ":10\r\n") 10))
-    (is (= (parse-str ":100\r\n") 100))
-    (is (= (parse-str ":1000\r\n") 1000))
-    (is (= (parse-str ":10000\r\n") 10000))
-    (is (= (parse-str ":100000\r\n") 100000))
-    (is (= (parse-str ":-1\r\n") -1)))
+    (is (= 1 (parse-str ":1\r\n") 1))
+    (is (= 10 (parse-str ":10\r\n")))
+    (is (= 100 (parse-str ":100\r\n")))
+    (is (= 1000 (parse-str ":1000\r\n")))
+    (is (= 10000 (parse-str ":10000\r\n")))
+    (is (= 100000 (parse-str ":100000\r\n")))
+    (is (= -1 (parse-str ":-1\r\n"))))
   (testing "RESP Bulk Strings"
-    (is (= (parse-str "$0\r\n\r\n") ""))
+    (is (= "" (parse-str "$0\r\n\r\n") ""))
     (is (nil? (parse-str "$-1\r\n")))
-    (is (= (parse-str "$6\r\nfoobar\r\n") "foobar")))
+    (is (util/bytes= "foobar" (parse-str "$6\r\nfoobar\r\n"))))
   (testing "RESP Arrays"
-    (is (= (parse-str "*0\r\n") []))
+    (is (= [] (parse-str "*0\r\n")))
     (is (nil? (parse-str "*-1\r\n")))
-    (is (= (parse-str "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n") ["foo" "bar"]))
+    (is (util/bytes= "foo" (first (parse-str "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"))))
+    (is (util/bytes= "bar" (second (parse-str "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"))))
     (is (= (parse-str "*3\r\n:1\r\n:2\r\n:3\r\n") [1 2 3]))
-    (is (= (parse-str "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n") [1 2 3 4 "foobar"]))
+    (is (= (take 4 (parse-str "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n")) [1 2 3 4]))
+    (is (util/bytes= (last (parse-str "*5\r\n:1\r\n:2\r\n:3\r\n:4\r\n$6\r\nfoobar\r\n")) "foobar"))
     (is (= (parse-str "*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n") [[1 2 3] [(redis.resp.SimpleString. "Foo") (redis.resp.Error. "Bar")]]))
-    (is (= (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") ["foo" nil "bar"])))
+    (is (util/bytes= "foo" (first (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n"))))
+    (is (nil? (get (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") 1)))
+    (is (util/bytes= "bar" (last (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n")))))
   (testing "Overflowing a response"
     (let [parser (ReplyParser. 2)]
       (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))
     (let [parser (ReplyParser.)]
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
       (is (util/bytes= (.getOverflow parser) (.getBytes "+O"))))))
-
-(comment
-  (loop [parser (ReplyParser.)]
-    (let [state-1 (.parse parser "-ERROR\r")
-          state-2 (try (.parse parser "\n")
-                       (catch Exception err
-                         (clojure.stacktrace/print-stack-trace err)))]
-      (println state-1)
-      (println state-2)))
-
-  (let [parser (ReplyParser.)]
-    (doseq [part  (->> "-ERR wrong number of arguments for 'get' command\r\n"
-                       vec
-                       (partition-all 8)
-                       (map #(apply str %)))]
-      (println (.parse parser part))))
-  )

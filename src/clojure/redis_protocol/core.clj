@@ -100,13 +100,13 @@
                  (util/crc16 ba))))))
        cluster-hash-slots))
 
-(defn debug-bytes [buf]
+(defn trace-bytes [buf]
   (let [^String byte-str (with-out-str (bs/print-bytes buf))
         lines (.split byte-str "\n")]
     (doseq [line (take 5 lines)]
-      (debug line))
+      (trace line))
     (if (> (count lines) 5)
-      (debug "..."))))
+      (trace "..."))))
 
 (defn error? [reply]
   (instance? redis.resp.Error reply))
@@ -302,6 +302,13 @@
        (debug "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
      (.interestOps k new-ops))))
 
+(defmulti dispatch
+  (fn [_ _ event]
+    (first event)))
+
+(defmethod dispatch :default [_ _ [action & event]]
+  (warn "unknown action:" action "event:" event))
+
 (defn route-complete-op [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
   (let [reply (.get (.root (.parser op)) 0)]
     (if (reroute? reply)
@@ -313,7 +320,7 @@
               (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
       (op reply))))
 
-(defn read! [client ^SelectionKey k]
+(defn handle-read! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^ConcurrentLinkedDeque read-queue ^ByteBuffer read-buffer] :as conn} (.attachment k)]
     (loop [n (.read channel (doto read-buffer
@@ -326,7 +333,7 @@
         :else     (let [_ (.flip read-buffer)
                         ba (byte-array n)
                         _ (.get read-buffer ba)
-                        _ (debug-bytes ba)]
+                        _ (trace-bytes ba)]
                     (loop [op (.getFirst read-queue)
                            buffer ba]
                       (let [[outcome overflow] (parse op ba)]
@@ -348,9 +355,8 @@
                           (do (error "parse error" outcome)
                               (fail-connection client conn (ex-info "Error parsing Redis Reply" {})))))))))))
 
-(defn write! [client ^SelectionKey k]
-  (let [^SocketChannel channel (.channel k)
-        {:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue] :as conn} (.attachment k)]
+(defn handle-write! [client ^SelectionKey k]
+  (let [{:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue] :as conn} (.attachment k)]
     (loop []
       (if-let [op (.pollFirst write-queue)]
         (let [n (.write channel ^ByteBuffer (.payload op))
@@ -361,24 +367,24 @@
             (incomplete? op) (do (debug "op is incomplete, adding back to write queue")
                                  (set-op! k OP_WRITE)
                                  (.addFirst write-queue op))
-            :else            (do (debug "done writing op")
+            :else            (do (debug "done writing:" op)
                                  (set-op! k OP_READ)
                                  (.addLast read-queue (flip op))
                                  (recur))))
         (do (trace "write queue is empty")
             (ignore-op! k OP_WRITE))))))
 
-(defn connect! [client ^SelectionKey k]
+(defn handle-connect! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^InetSocketAddress address read-queue write-queue] :as conn} (.attachment k)]
     (try
       (debug "finishing connect on" channel)
       (let [connect-finished? (.finishConnect channel)]
         (when connect-finished?
-          (ignore-op! k OP_CONNECT)
           (set-op! k OP_READ)
+          (ignore-op! k OP_CONNECT)
           (debug "connected, writing queued ops on" )
-          (write! client k)))
+          (handle-write! client k)))
       (catch java.net.ConnectException ex
         (warn ex "error connecting to" address)
         (fail-connection client conn (ex-info "error connecting" {} ex))
@@ -387,13 +393,6 @@
         (error ex "IOException when finishing connect")
         (fail-connection client conn ex)
         (.cancel k)))))
-
-(defmulti dispatch
-  (fn [_ _ event]
-    (first event)))
-
-(defmethod dispatch :default [_ _ [action & event]]
-  (warn "unknown action:" action "event:" event))
 
 (defn rand-seed [client]
   (-> client
@@ -406,17 +405,14 @@
 (defmethod dispatch :shutdown [connections {:keys [seeds ^Selector selector] :as client} _]
   (throw shutdown-exception))
 
-(defn- register! [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} ^Selector selector]
-  (if (.connect channel address)
-    (do (debug address "can be established immediately, registering" channel "with" (ops->str OP_READ))
-        (.register channel selector OP_READ conn))
-    (do (debug address "cannot be established immediately, registering" channel "with" (ops->str OP_CONNECT))
-        (.register channel selector OP_CONNECT conn))))
-
 (defn resolve-connection [{:keys [seeds ^Selector selector connections] :as client} address]
   (or (get @connections address)
-      (let [conn (socket-connection address)]
-        (register! conn selector)
+      (let [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} (socket-connection address)]
+        (if (.connect channel address)
+          (do (debug address "can be established immediately, registering" channel "with" (ops->str OP_READ))
+              (.register channel selector OP_READ conn))
+          (do (debug address "cannot be established immediately, registering" channel "with" (ops->str OP_CONNECT))
+              (.register channel selector OP_CONNECT conn)))
         (swap! connections assoc address conn)
         conn)))
 
@@ -438,10 +434,10 @@
             (if (= -1 n)
               (do (warn "connection closed")
                   (cleanup-connection client conn)
-                  (op (ex-info "Connection closed when writing" {:op op})))
+                  (op (ex-info "Connection closed when writing" {})))
               (let [k (.keyFor channel selector)]
                 (if (complete? op)
-                  (do (debug "done writing op:" op)
+                  (do (debug "done writing:" op)
                       (ignore-op! k OP_WRITE)
                       (set-op! k OP_READ)
                       (.addLast read-queue (flip op)))
@@ -482,11 +478,11 @@
                         (debug "key is not valid:" selected-key)
                         (do
                           (when (.isReadable selected-key)
-                            (read! client selected-key))
+                            (handle-read! client selected-key))
                           (when (and (.isValid selected-key) (.isWritable selected-key))
-                            (write! client selected-key))
+                            (handle-write! client selected-key))
                           (when (and (.isValid selected-key) (.isConnectable selected-key))
-                            (connect! client selected-key))))))
+                            (handle-connect! client selected-key))))))
                   (recur))
                 (recur))))
         (warn "Selector is closed")))

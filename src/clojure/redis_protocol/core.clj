@@ -144,10 +144,6 @@
   (redirect [this x])
   (ask [this x]))
 
-;; (defprotocol WriteOperation
-;;   (parse [this])
-;;   (overflow [this]))
-
 (deftype SingleWriteOperation [^long slot ^long redirects ^bytes request ^ByteBuffer payload action ^Future fut]
   Object
   (toString [_]
@@ -354,17 +350,23 @@
 
 (defn write! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
-        {:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue] :as conn} (.attachment k)
-        ops (drain write-queue)]
-    (doseq [op ops]
-      (let [n (.write channel ^ByteBuffer (.payload op))]
-        (cond
-          (= -1 n)       (do (warn "connection closed")
-                             (cleanup-connection client conn))
-          (complete? op) (do (debug "done writing op")
-                             (ignore-op! k OP_WRITE)
-                             (set-op! k OP_READ)
-                             (.addLast read-queue (flip op))))))))
+        {:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue] :as conn} (.attachment k)]
+    (loop []
+      (if-let [op (.pollFirst write-queue)]
+        (let [n (.write channel ^ByteBuffer (.payload op))
+              _ (trace "wrote" n "bytes to" (.getRemoteAddress channel))]
+          (cond
+            (= -1 n)         (do (warn "connection closed")
+                                 (cleanup-connection client conn))
+            (incomplete? op) (do (debug "op is incomplete, adding back to write queue")
+                                 (set-op! k OP_WRITE)
+                                 (.addFirst write-queue op))
+            :else            (do (debug "done writing op")
+                                 (set-op! k OP_READ)
+                                 (.addLast read-queue (flip op))
+                                 (recur))))
+        (do (trace "write queue is empty")
+            (ignore-op! k OP_WRITE))))))
 
 (defn connect! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
@@ -373,9 +375,9 @@
       (debug "finishing connect on" channel)
       (let [connect-finished? (.finishConnect channel)]
         (when connect-finished?
-          (set-op! k OP_READ)
           (ignore-op! k OP_CONNECT)
-          (debug "connected, writing queued ops")
+          (set-op! k OP_READ)
+          (debug "connected, writing queued ops on" )
           (write! client k)))
       (catch java.net.ConnectException ex
         (warn ex "error connecting to" address)
@@ -439,7 +441,7 @@
                   (op (ex-info "Connection closed when writing" {:op op})))
               (let [k (.keyFor channel selector)]
                 (if (complete? op)
-                  (do (debug "done writing op")
+                  (do (debug "done writing op:" op)
                       (ignore-op! k OP_WRITE)
                       (set-op! k OP_READ)
                       (.addLast read-queue (flip op)))
@@ -474,6 +476,7 @@
                   (trace "Selector/select yields" n "key(s)")
                   (while (.hasNext itr)
                     (let [^SelectionKey selected-key (.next itr)]
+                      (trace "selection key:" (ops->str (.readyOps selected-key)) "channel:" (-> selected-key (.channel) (.getRemoteAddress)))
                       (.remove itr)
                       (if (not (.isValid selected-key))
                         (debug "key is not valid:" selected-key)

@@ -12,7 +12,7 @@
            (java.io Closeable IOException)
            (java.nio ByteBuffer)
            (java.nio.channels AsynchronousSocketChannel CompletionHandler SelectionKey Selector SocketChannel CancelledKeyException)
-           (java.util.concurrent TimeUnit LinkedBlockingDeque BlockingQueue Phaser LinkedTransferQueue ConcurrentLinkedDeque Executors ScheduledThreadPoolExecutor Future)
+           (java.util.concurrent TimeUnit LinkedBlockingDeque BlockingQueue LinkedTransferQueue ConcurrentLinkedDeque Executors ScheduledThreadPoolExecutor Future)
            (java.util.concurrent.atomic AtomicLong)))
 
 
@@ -101,12 +101,9 @@
        cluster-hash-slots))
 
 (defn trace-bytes [buf]
-  (let [^String byte-str (with-out-str (bs/print-bytes buf))
-        lines (.split byte-str "\n")]
-    (doseq [line (take 5 lines)]
-      (trace line))
-    (if (> (count lines) 5)
-      (trace "..."))))
+  (trace (let [^String byte-str (with-out-str (bs/print-bytes buf))
+               lines (.split byte-str "\n")]
+           (str/join "\n" (conj (take 10 lines) "Buffer")))))
 
 (defn error? [reply]
   (instance? redis.resp.Error reply))
@@ -161,7 +158,9 @@
   ReadOperation
   (parse [_ buffer]
     (let [outcome (.parse parser ^bytes buffer)]
-      [outcome (when (= (ReplyParser/PARSE_OVERFLOW) (.getOverflow parser)))]))
+      [outcome
+       (when (= ReplyParser/PARSE_OVERFLOW outcome)
+         (.getOverflow parser))]))
   (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
     (let [reply (.get (.root (.parser op)) 0)]
       (if (reroute? reply)
@@ -184,7 +183,9 @@
   ReadOperation
   (parse [_ buffer]
     (let [outcome (.parse parser ^bytes buffer)]
-      [outcome (when (= (ReplyParser/PARSE_OVERFLOW) (.getOverflow parser)))]))
+      [outcome
+       (when (= ReplyParser/PARSE_OVERFLOW outcome)
+         (.getOverflow parser))]))
   (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
     (let [ask-reply (.get (.root parser) 0)
           reply     (.get (.root parser) 1)]
@@ -334,22 +335,27 @@
                         ba (byte-array n)
                         _ (.get read-buffer ba)
                         _ (trace-bytes ba)]
-                    (loop [op (.getFirst read-queue)
-                           buffer ba]
-                      (let [[outcome overflow] (parse op ba)]
+                    (loop [buffer ba]
+                      (let [op (.getFirst read-queue)
+                            [outcome overflow] (parse op buffer)]
                         (trace "op:" op)
                         (cond
                           (= outcome ReplyParser/PARSE_INCOMPLETE)
-                          (trace "waiting for more bytes")
+                          (debug "waiting for more bytes")
 
-                          (or (= ReplyParser/PARSE_OVERFLOW outcome)
-                              (= (ReplyParser/PARSE_COMPLETE) outcome))
-                          (do (trace "parse is complete")
+                          (= (ReplyParser/PARSE_COMPLETE) outcome)
+                          (do (debug "parse is complete")
+                              (.removeFirst read-queue)
+                              (complete op client))
+
+                          (= ReplyParser/PARSE_OVERFLOW outcome)
+                          (do (debug "completed parsing op, but more bytes remain")
+                              (when overflow
+                                (warn "overflow" (alength overflow))
+                                (trace-bytes overflow))
                               (.removeFirst read-queue)
                               (complete op client)
-                              (when (= ReplyParser/PARSE_OVERFLOW outcome)
-                                (trace "overflow of response")
-                                (recur (.getFirst read-queue) overflow)))
+                              (recur overflow))
 
                           :else
                           (do (error "parse error" outcome)
@@ -438,12 +444,12 @@
               (let [k (.keyFor channel selector)]
                 (if (complete? op)
                   (do (debug "done writing:" op)
+                      (.addLast read-queue (flip op))
                       (ignore-op! k OP_WRITE)
-                      (set-op! k OP_READ)
-                      (.addLast read-queue (flip op)))
+                      (set-op! k OP_READ))
                   (do (debug "op is incomplete")
-                      (set-op! k OP_WRITE)
-                      (.addFirst write-queue op))))))
+                      (.addFirst write-queue op)
+                      (set-op! k OP_WRITE))))))
 
           :else
           (throw (ex-info "Connection is not pending or connected!" {:op op})))))
@@ -455,15 +461,16 @@
     (loop []
       (if (.isOpen selector)
         (do (loop [n 0]
-              (when-let [event (.pollFirst dispatch-queue)]
-                (debug "dispatching:" event)
-                (try
-                  (dispatch connections client event)
-                  (catch Throwable err
-                    (if (= err shutdown-exception)
-                      (throw err)
-                      (error err "caught throwable when dispatching event"))))
-                (recur (inc n))))
+              (if-let [event (.pollFirst dispatch-queue)]
+                (do (debug "dispatching:" event)
+                    (try
+                      (dispatch connections client event)
+                      (catch Throwable err
+                        (if (= err shutdown-exception)
+                          (throw err)
+                          (error err "caught throwable when dispatching event"))))
+                    (recur (inc n)))
+                (trace "dispatch queue is empty after" n "dispatched events")))
 
             (let [n (.select selector 50)]
               (if (> n 0)
@@ -497,13 +504,14 @@
 (defn send-command
   ([client args]
    (send-command client nil args))
-  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor] :as client} address args]
+  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor ^Selector selector] :as client} address args]
    {:pre [(vector? args)]}
    (let [p           (promise)
          timeout     (ex-info "Operation timed out" {:timeout? true :args args})
-         fut         (.schedule scheduled-executor ^Runnable (fn [] (deliver p timeout)) 2000 (TimeUnit/MILLISECONDS))
+         fut         (.schedule scheduled-executor ^Runnable (fn [] (deliver p timeout)) 10000 (TimeUnit/MILLISECONDS))
          op          (write-operation args p fut)]
      (.addLast dispatch-queue (if (instance? InetSocketAddress address) [:resolve op address] [:resolve op]))
+     (.wakeup selector)
      p)))
 
 (defn connect [host ^long port]

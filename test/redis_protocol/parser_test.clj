@@ -1,6 +1,7 @@
 (ns redis-protocol.parser-test
   (:require [clojure.test :refer :all]
-            [redis-protocol.util :as util :refer [parse-str]])
+            [redis-protocol.util :as util :refer [parse-str]]
+            [redis-protocol.core :as c])
   (:import (redis.resp ReplyParser)))
 
 
@@ -35,6 +36,15 @@
     (is (nil? (get (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") 1)))
     (is (util/bytes= "bar" (last (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n")))))
   (testing "Overflowing a response"
+    (let [parsers (vec (take 4 (repeatedly #(ReplyParser. 1))))]
+      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 0) "*0\r\n*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n")))
+      (is (= [] (first (.root (get parsers 0 )))))
+      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 1) (.getOverflow (get parsers 0)))))
+      (is (= [] (first (.root (get parsers 1 )))))
+      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 2) (.getOverflow (get parsers 1)))))
+      (is (= [] (first (.root (get parsers 2)))))
+      (is (= (ReplyParser/PARSE_COMPLETE) (.parse (get parsers 3) (.getOverflow (get parsers 2)))))
+      (is (util/bytes= ":20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y" (ffirst (.root (get parsers 3))))))
     (let [parser (ReplyParser. 2)]
       (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))
     (let [parser (ReplyParser.)]

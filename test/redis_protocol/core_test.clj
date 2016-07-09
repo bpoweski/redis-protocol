@@ -12,6 +12,7 @@
   (testing "SET key value"
     (is (util/bytes= (args->bytes ["SET" "key" "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"))
     (is (util/bytes= (args->bytes [:SET "key" "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"))
+    (is (util/bytes= (args->bytes [:LRANGE "key" 0 -1]) "*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n"))
     (is (not (util/bytes= (args->bytes [:SET (util/utf-16le-bytes "key") "value"]) "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n")))))
 
 (deftest ops->str-test

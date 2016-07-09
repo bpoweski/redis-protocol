@@ -68,7 +68,10 @@
   (to-bytes [this] (.getBytes this utf8-charset))
 
   clojure.lang.Keyword
-  (to-bytes [kw] (to-bytes (name kw))))
+  (to-bytes [kw] (to-bytes (name kw)))
+
+  java.lang.Long
+  (to-bytes [l] (to-bytes (Long/toString l))))
 
 ;; Refer: [Google Group Discussion](https://groups.google.com/forum/#!topic/clojure/cioMCdArsKw)
 (extend-type (Class/forName "[B")

@@ -8,7 +8,8 @@
                  [com.taoensso/encore "2.52.1"]
                  [org.clojure/clojure "1.7.0"]
                  [org.clojure/core.async "0.2.374"]
-                 [org.clojure/tools.trace "0.7.9"]]
+                 [org.clojure/tools.trace "0.7.9"]
+                 [org.clojure/tools.cli "0.3.5"]]
   :profiles {:dev {:dependencies [[com.spotify/docker-client "5.0.1"] ;; it's shocking this hasn't cause dependency conflicts yet
                                   [com.taoensso/carmine "2.13.0-RC1"]
                                   [criterium "0.4.4"]

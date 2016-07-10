@@ -131,111 +131,50 @@
         [^String address port] (str/split address-port #":" 2)]
     [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))]))
 
-(defprotocol ReadOperation
-  (parse [this ^ByteBuffer buffer])
-  (complete [this client]))
+(defn parse [{:keys [^ReplyParser parser] :as op} ^bytes buffer]
+  (let [outcome (.parse parser buffer)]
+    [outcome
+     (when (= ReplyParser/PARSE_OVERFLOW outcome)
+       (.getOverflow parser))]))
 
-(defprotocol WriteOperation
-  (flip [this]))
+(defn flip [{:keys [asking?] :as op}]
+  (assoc op :parser (if asking?
+                      (ReplyParser. 2)
+                      (ReplyParser. 1))))
 
-(defprotocol RetryableOperation
-  (redirect [this x])
-  (ask [this x]))
-
-(deftype SingleWriteOperation [^long slot ^long redirects ^bytes request ^ByteBuffer payload action ^Future fut]
-  Object
-  (toString [_]
-    (str "SingleWriteOperation<<slot: " slot ", length: " (.limit payload) ", remaining: " (.remaining payload) ">>"))
-  clojure.lang.IFn
-  (invoke [this val]
-    (.cancel fut true)
-    (action val)
-    this))
-
-(deftype SingleReadOperation [^SingleWriteOperation write ^ReplyParser parser]
-  Object
-  (toString [_]
-    (str "SingleReadOperation<<slot: " (.slot write) ", redirects: " (.redirects write) ">>"))
-  ReadOperation
-  (parse [_ buffer]
-    (let [outcome (.parse parser ^bytes buffer)]
-      [outcome
-       (when (= ReplyParser/PARSE_OVERFLOW outcome)
-         (.getOverflow parser))]))
-  (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
-    (let [reply (.get (.root (.parser op)) 0)]
-      (if (reroute? reply)
-        (let [[slot address] (rerouted-to reply)]
-          (if (moved? reply)
-            (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
-                (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
-            (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
-                (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
-        (op reply))))
-  clojure.lang.IFn
-  (invoke [this val]
-    (write val)
-    this))
-
-(deftype AskingReadOperation [^SingleWriteOperation write ^ReplyParser parser]
-  Object
-  (toString [_]
-    (str "AskingReadOperation<<slot: " (.slot write) ", redirects: " (.redirects write) ">>"))
-  ReadOperation
-  (parse [_ buffer]
-    (let [outcome (.parse parser ^bytes buffer)]
-      [outcome
-       (when (= ReplyParser/PARSE_OVERFLOW outcome)
-         (.getOverflow parser))]))
-  (complete [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
-    (let [ask-reply (.get (.root parser) 0)
-          reply     (.get (.root parser) 1)]
-      (if (reroute? reply)
-        (let [[slot address] (rerouted-to reply)]
-          (if (moved? reply)
-            (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
-                (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
-            (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
-                (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
-        (op reply))))
-  clojure.lang.IFn
-  (invoke [this val]
-    (write val)
-    this))
-
-(deftype AskingWriteOperation [^long slot ^long redirects ^bytes request ^ByteBuffer payload action ^Future fut]
-  Object
-  (toString [_]
-    (str "AskingWriteOperation<<" slot ">>"))
-  clojure.lang.IFn
-  (invoke [this val]
-    (.cancel fut true)
-    (action val)
-    this))
-
-(extend-protocol WriteOperation
-  SingleWriteOperation
-  (flip [this] (->SingleReadOperation this (ReplyParser. 1)))
-
-  AskingWriteOperation
-  (flip [this] (->AskingReadOperation this (ReplyParser. 2))))
+(defn redirect [{:keys [^bytes request] :as op} x]
+  (-> op
+      (update :redirects inc)
+      (assoc :write-buffer (ByteBuffer/wrap request))))
 
 (def asking-bytes (args->bytes [:ASKING]))
 
-(extend-protocol RetryableOperation
-  SingleReadOperation
-  (redirect [this x]
-    (let [^SingleWriteOperation op (.write this)]
-      (->SingleWriteOperation x (inc (.redirects op)) (.request op) (ByteBuffer/wrap (.request op)) (.action op) (.fut op))))
-  (ask [this x]
-    (let [^SingleWriteOperation op (.write this)
-          n-redirects (inc (.redirects op))
-          ba (.request op)
-          byte-buffer (doto (ByteBuffer/allocate (+ (count asking-bytes) (count ba)))
-                        (.put asking-bytes)
-                        (.put ba)
-                        (.flip))]
-      (->AskingWriteOperation (.slot op) n-redirects ba byte-buffer (.action op) (.fut op)))))
+(defn ask [{:keys [^bytes request] :as op} slot]
+  (-> op
+      (update :redirects inc)
+      (assoc :write-buffer (doto (ByteBuffer/allocate (+ (count asking-bytes) (count request)))
+                             (.put asking-bytes)
+                             (.put request)
+                             (.flip))
+             :asking? true)))
+
+(defn finish [{:keys [action ^Future timeout-future] :as op} result]
+  (.cancel timeout-future true)
+  (action result))
+
+;; [ask-reply (.get (.root parser) 0)
+;;  reply     (.get (.root parser) 1)]
+
+(defn complete [{:keys [action ^Future timeout-future ^ReplyParser parser asking?] :as op} {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
+  (let [reply (.get (.root parser) (if asking? 1 0))]
+    (if (reroute? reply)
+      (let [[slot address] (rerouted-to reply)]
+        (if (moved? reply)
+          (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
+              (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
+          (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
+              (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
+      (finish op reply))))
 
 (defn write-operation [args action timeout-fut]
   {:pre [(vector? args)]}
@@ -243,7 +182,12 @@
                 (hash-slot (.getBytes ^String k))
                 -1)]
     (let [request (args->bytes args)]
-      (->SingleWriteOperation slot 0 request (ByteBuffer/wrap request) action timeout-fut))))
+      {:slot           slot
+       :redirects      0
+       :request        request
+       :write-buffer        (ByteBuffer/wrap request)
+       :action         action
+       :timeout-future timeout-fut})))
 
 (defrecord RedisClient [seeds ^Selector selector connections slot-cache ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
   Closeable
@@ -266,7 +210,7 @@
 (defn fail-connection [client {:keys [^LinkedBlockingDeque write-queue] :as conn} ex]
   (cleanup-connection client conn)
   (doseq [op (drain write-queue)]
-    (op ex)))
+    (finish op ex)))
 
 (defn socket-connection [^InetSocketAddress address]
   (let [read-buffer (ByteBuffer/allocateDirect (* 16 1024))
@@ -277,8 +221,15 @@
                       (.setOption (StandardSocketOptions/TCP_NODELAY) false))]
     (->SocketConnection channel address read-buffer read-queue write-queue)))
 
+(def byte-array-class (Class/forName "[B"))
+
+(defn op? [{:keys [write-buffer request timeout-future] :as op}]
+  (and (instance? ByteBuffer write-buffer)
+       (instance? byte-array-class request)
+       (instance? Future timeout-future)))
+
 (defn incomplete? [op]
-  (.hasRemaining ^ByteBuffer (.payload op)))
+  (.hasRemaining ^ByteBuffer (:write-buffer op)))
 
 (defn complete? [op]
   (not (incomplete? op)))
@@ -286,13 +237,16 @@
 (defn ops->str [x]
   (str "[" (if (bit-test x 0) "R" "-") (if (bit-test x 2) "W" "-") (if (bit-test x 3) "C" "-") "]"))
 
+(defn remote-address [^SelectionKey k]
+  (.getRemoteAddress (.channel k)))
+
 (defn set-op!
   "Sets interested ops."
   [^SelectionKey k x]
   (let [current-ops (.interestOps k)
         new-ops     (bit-or current-ops x)]
     (when (not= current-ops new-ops)
-      (debug "adding op" (ops->str current-ops) "->" (ops->str new-ops))
+      (debug (remote-address k) "adding op" (ops->str current-ops) "->" (ops->str new-ops))
       (.interestOps k new-ops))))
 
 (defn ignore-op!
@@ -301,7 +255,7 @@
    (let [current-ops (.interestOps k)
          new-ops     (bit-and current-ops (bit-not x))]
      (when (not= current-ops new-ops)
-       (debug "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
+       (debug (remote-address k) "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
      (.interestOps k new-ops))))
 
 (defmulti dispatch
@@ -311,86 +265,73 @@
 (defmethod dispatch :default [_ _ [action & event]]
   (warn "unknown action:" action "event:" event))
 
-(defn route-complete-op [op {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
-  (let [reply (.get (.root (.parser op)) 0)]
-    (if (reroute? reply)
-      (let [[slot address] (rerouted-to reply)]
-        (if (moved? reply)
-          (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
-              (.addFirst dispatch-queue [:resolve (redirect op slot) address]))
-          (do (debug "-> Asking for slot" (str "[" slot "]") "located at" address)
-              (.addFirst dispatch-queue [:resolve (ask op slot) address]))))
-      (op reply))))
-
 (defn handle-read! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^ConcurrentLinkedDeque read-queue ^ByteBuffer read-buffer] :as conn} (.attachment k)]
     (loop [n (.read channel (doto read-buffer
                               (.clear)))]
-      (trace "read:" n "bytes")
       (cond
-        (= -1 n)  (do (warn "connection closed")
+        (= -1 n)  (do (warn (remote-address k) "connection closed")
                       (cleanup-connection client conn))
-        (zero? n) (debug "no bytes read")
+        (zero? n) (debug (remote-address k) "no bytes read")
         :else     (let [_ (.flip read-buffer)
                         ba (byte-array n)
                         _ (.get read-buffer ba)
-                        _ (trace-bytes ba (str "read buffer of " (.getRemoteAddress channel)))]
+                        _ (trace-bytes ba (str (remote-address k) " read " n " byte(s)"))]
                     (loop [buffer ba]
                       (let [op (.getFirst read-queue)
                             [outcome overflow] (parse op buffer)]
-                        (trace "op:" op)
                         (cond
                           (= outcome ReplyParser/PARSE_INCOMPLETE)
-                          (debug "waiting for more bytes")
+                          (debug (remote-address k) "waiting for more byte(s)")
 
                           (= (ReplyParser/PARSE_COMPLETE) outcome)
-                          (do (debug "parse is complete")
+                          (do (debug (remote-address k) "parse is complete")
                               (.removeFirst read-queue)
                               (complete op client))
 
                           (= ReplyParser/PARSE_OVERFLOW outcome)
-                          (do (debug "completed parsing op, but more bytes remain")
+                          (do (debug (remote-address k) "completed parsing op, but more byte(s) remain")
                               (when overflow
-                                (warn "buffer has an addition" (alength overflow) "bytes")
-                                (trace-bytes overflow "remaining bytes in receive buffer"))
+                                (warn (remote-address k) "buffer has an additional" (alength overflow) "byte(s)")
+                                (trace-bytes overflow (str (remote-address k) " remaining byte(s) in receive buffer")))
                               (.removeFirst read-queue)
                               (complete op client)
                               (recur overflow))
 
                           :else
-                          (do (error "parse error" outcome)
+                          (do (error (remote-address k) "parse error" outcome)
                               (fail-connection client conn (ex-info "Error parsing Redis Reply" {})))))))))))
 
 (defn handle-write! [client ^SelectionKey k]
   (let [{:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue] :as conn} (.attachment k)]
     (loop []
       (if-let [op (.pollFirst write-queue)]
-        (let [n (.write channel ^ByteBuffer (.payload op))
-              _ (trace "wrote" n "bytes to" (.getRemoteAddress channel))]
+        (let [n (.write channel ^ByteBuffer (:write-buffer op))
+              _ (trace (remote-address k) "wrote" n "byte(s)" (:write-buffer op))]
           (cond
-            (= -1 n)         (do (warn "connection closed")
+            (= -1 n)         (do (warn (remote-address k) "connection closed")
                                  (cleanup-connection client conn))
-            (incomplete? op) (do (debug "op is incomplete, adding back to write queue")
+            (incomplete? op) (do (debug (remote-address k) "op is incomplete, adding back to write queue" (:write-buffer op))
                                  (set-op! k OP_WRITE)
                                  (.addFirst write-queue op))
-            :else            (do (debug "done writing:" op)
+            :else            (do (trace-bytes (:request op) (str (remote-address k) " done writing op " (:write-buffer op)))
                                  (set-op! k OP_READ)
                                  (.addLast read-queue (flip op))
                                  (recur))))
-        (do (trace "write queue is empty")
+        (do (trace (remote-address k) "write queue is empty")
             (ignore-op! k OP_WRITE))))))
 
 (defn handle-connect! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^InetSocketAddress address read-queue write-queue] :as conn} (.attachment k)]
     (try
-      (debug "finishing connect on" channel)
+      (debug (remote-address k) "finishing connect")
       (let [connect-finished? (.finishConnect channel)]
         (when connect-finished?
           (set-op! k OP_READ)
           (ignore-op! k OP_CONNECT)
-          (debug "connected, writing queued ops on" )
+          (debug (remote-address k) "connected, writing queued ops")
           (handle-write! client k)))
       (catch java.net.ConnectException ex
         (warn ex "error connecting to" address)
@@ -416,39 +357,40 @@
   (or (get @connections address)
       (let [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} (socket-connection address)]
         (if (.connect channel address)
-          (do (debug address "can be established immediately, registering" channel "with" (ops->str OP_READ))
+          (do (debug address "connection has been established immediately, registering" (ops->str OP_READ))
               (.register channel selector OP_READ conn))
-          (do (debug address "cannot be established immediately, registering" channel "with" (ops->str OP_CONNECT))
+          (do (debug address "connection cannot be established immediately, registering" (ops->str OP_CONNECT))
               (.register channel selector OP_CONNECT conn)))
         (swap! connections assoc address conn)
         conn)))
 
 (defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache] :as client} [_ op addr]]
   (let [conns            @connections
-        resolved-conn    (if-let [address (or addr (get @slot-cache (.slot op)))]
+        resolved-conn    (if-let [address (or addr (get @slot-cache (:slot op)))]
                            (resolve-connection client address)
                            (or (rand-nth (vals conns))
                                (resolve-connection client (rand-seed client))))]
     (.addFirst dispatch-queue [:write op resolved-conn])))
 
 (defmethod dispatch :write [connections {:keys [^Selector selector] :as client} [_ op conn]]
-  (let [{:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue]} conn]
+  (let [{:keys [^SocketChannel channel ^ConcurrentLinkedDeque read-queue ^LinkedBlockingDeque write-queue]} conn
+        address (.getRemoteAddress channel)]
     (cond (.isConnectionPending channel)
           (.add write-queue op)
 
           (.isConnected channel)
-          (let [n (.write channel ^ByteBuffer (.payload op))]
+          (let [n (.write channel ^ByteBuffer (:write-buffer op))]
             (if (= -1 n)
-              (do (warn "connection closed")
+              (do (warn address "connection closed")
                   (cleanup-connection client conn)
-                  (op (ex-info "Connection closed when writing" {})))
+                  (finish op (ex-info "Connection closed when writing" {})))
               (let [k (.keyFor channel selector)]
                 (if (complete? op)
-                  (do (debug "done writing:" op)
+                  (do (trace-bytes (:request op) (str address " done writing op: " (:write-buffer op)))
                       (.addLast read-queue (flip op))
                       (ignore-op! k OP_WRITE)
                       (set-op! k OP_READ))
-                  (do (debug "op is incomplete")
+                  (do (debug address "op is incomplete" (:write-buffer op))
                       (.addFirst write-queue op)
                       (set-op! k OP_WRITE))))))
 
@@ -480,10 +422,10 @@
                   (trace "Selector/select yields" n "key(s)")
                   (while (.hasNext itr)
                     (let [^SelectionKey selected-key (.next itr)]
-                      (trace "selection key:" (ops->str (.readyOps selected-key)) "channel:" (-> selected-key (.channel) (.getRemoteAddress)))
+                      (trace (remote-address selected-key) "SelectionKey is ready:" (ops->str (.readyOps selected-key)))
                       (.remove itr)
                       (if (not (.isValid selected-key))
-                        (debug "key is not valid:" selected-key)
+                        (debug (remote-address selected-key) "SelectionKey is not valid")
                         (do
                           (when (.isReadable selected-key)
                             (handle-read! client selected-key))

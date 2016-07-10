@@ -39,6 +39,3 @@
   (is (= 12739 (hash-slot (.getBytes "super-long-key{123456789}"))))
   (is (= 0 (hash-slot (.getBytes "super-long-key{}"))))
   (is (= 4092 (hash-slot (.getBytes "{")))))
-
-(deftest flip-test
-  (testing "WriteRead"))

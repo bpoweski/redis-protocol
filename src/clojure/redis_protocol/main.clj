@@ -12,9 +12,6 @@
 (timbre/refer-timbre)
 
 
-(def LATENCY_SAMPLE_RATE 10)
-(def LATENCY_HISTORY_DEFAULT_INTERVAL 15000)
-
 (defprotocol DurationConversions
   (ns->ms [x])
   (ns->s [x]))

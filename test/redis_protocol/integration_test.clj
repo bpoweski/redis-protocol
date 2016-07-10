@@ -69,12 +69,13 @@
   (info "cluster-assign-all")
   (cluster-assign-all "10.18.10.1" 6379)
   (info "waiting for cluster to converge")
-  (await-convergence "10.18.10.1" 6379)
+  (doseq [[address port] test-addresses]
+    (await-convergence address port))
   (info "done"))
 
 (defmacro with-empty-cluster [desc & body]
-  `(do (flush-nodes test-addresses)
-       (testing ~desc
+  `(do (testing ~desc
+         (flush-nodes test-addresses)
          ~@body)))
 
 (defn to-spec [^InetSocketAddress address]

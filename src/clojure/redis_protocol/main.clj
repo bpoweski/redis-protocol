@@ -1,4 +1,5 @@
 (ns redis-protocol.main
+  (:refer-clojure :exclude [benchmark])
   (:require [redis-protocol.core :as redis]
             [taoensso.timbre :as timbre]
             [clojure.string :as str]

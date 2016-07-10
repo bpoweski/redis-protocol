@@ -100,10 +100,11 @@
                  (util/crc16 ba))))))
        cluster-hash-slots))
 
-(defn trace-bytes [buf]
+(defn trace-bytes [buf msg]
   (trace (let [^String byte-str (with-out-str (bs/print-bytes buf))
-               lines (.split byte-str "\n")]
-           (str/join "\n" (conj (take 10 lines) "Buffer")))))
+               lines (.split byte-str "\n")
+               log-msg (str/join "\n" (conj (map str (repeat "    ") (take 10 lines)) msg))]
+           log-msg)))
 
 (defn error? [reply]
   (instance? redis.resp.Error reply))
@@ -334,7 +335,7 @@
         :else     (let [_ (.flip read-buffer)
                         ba (byte-array n)
                         _ (.get read-buffer ba)
-                        _ (trace-bytes ba)]
+                        _ (trace-bytes ba (str "read buffer of " (.getRemoteAddress channel)))]
                     (loop [buffer ba]
                       (let [op (.getFirst read-queue)
                             [outcome overflow] (parse op buffer)]
@@ -351,8 +352,8 @@
                           (= ReplyParser/PARSE_OVERFLOW outcome)
                           (do (debug "completed parsing op, but more bytes remain")
                               (when overflow
-                                (warn "overflow" (alength overflow))
-                                (trace-bytes overflow))
+                                (warn "buffer has an addition" (alength overflow) "bytes")
+                                (trace-bytes overflow "remaining bytes in receive buffer"))
                               (.removeFirst read-queue)
                               (complete op client)
                               (recur overflow))

@@ -39,3 +39,7 @@
   (is (= 12739 (hash-slot (.getBytes "super-long-key{123456789}"))))
   (is (= 0 (hash-slot (.getBytes "super-long-key{}"))))
   (is (= 4092 (hash-slot (.getBytes "{")))))
+
+(deftest command->key-mapping-test
+  (is (= [:getbit {:arity 3 :flags #{:readonly :fast} :key-pos [1 1] :step 1}]
+         (command->key-mapping [(util/ascii-bytes "getbit") 3 ["readonly" "fast"] 1 1 1]))))

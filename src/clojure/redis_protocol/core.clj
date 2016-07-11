@@ -20,7 +20,7 @@
 (def OP_READ (SelectionKey/OP_READ))
 (def OP_WRITE (SelectionKey/OP_WRITE))
 
-;; (set! *warn-on-reflection* true)
+(set! *warn-on-reflection* true)
 ;; (set! *unchecked-math* :warn-on-boxed)
 
 (timbre/refer-timbre)
@@ -42,13 +42,11 @@
 
 ;; http://rox-xmlrpc.sourceforge.net/niotut/#The client
 
-(def ascii-charset (java.nio.charset.Charset/forName "ASCII"))
-
 (defn arg-length [^bytes ba]
   (+ 1 (count (str (alength ba))) 2 (alength ba) 2))
 
-(defn resp-prefix [ch x]
-  (.getBytes (str ch x "\r\n") ascii-charset))
+(defn ^"[B" resp-prefix [ch x]
+  (util/ascii-bytes (str ch x "\r\n")))
 
 (defn args->bytes
   "Encodes a vector of values into the corresponding length encoded Redis format."
@@ -58,7 +56,7 @@
         byte-arrays  (map util/to-bytes args)
         total-bytes  (apply + (alength prefix) (map arg-length byte-arrays))
         result       (byte-array total-bytes prefix)]
-    (loop [[ba & more] byte-arrays
+    (loop [[^bytes ba & more] byte-arrays
            pos         (alength prefix)]
       (let [ba-prefix (resp-prefix \$ (alength ba))]
         (System/arraycopy ba-prefix 0 result pos (alength ba-prefix))
@@ -131,43 +129,55 @@
         [^String address port] (str/split address-port #":" 2)]
     [(Long/parseLong slot) (InetSocketAddress. address (Integer/parseInt port))]))
 
+(def byte-array-class (Class/forName "[B"))
+
+(defn op? [{:keys [write-buffer request timeout-future action] :as op}]
+  (and (instance? ByteBuffer write-buffer)
+       (instance? byte-array-class request)
+       (instance? Future timeout-future)
+       (instance? clojure.lang.IFn action)))
+
 (defn parse [{:keys [^ReplyParser parser] :as op} ^bytes buffer]
+  {:pre [(op? op)]}
   (let [outcome (.parse parser buffer)]
     [outcome
      (when (= ReplyParser/PARSE_OVERFLOW outcome)
        (.getOverflow parser))]))
 
 (defn flip [{:keys [asking?] :as op}]
+  {:pre [(op? op)]}
   (assoc op :parser (if asking?
                       (ReplyParser. 2)
                       (ReplyParser. 1))))
 
 (defn redirect [{:keys [^bytes request] :as op} x]
+  {:pre [(op? op) (integer? x)]}
   (-> op
       (update :redirects inc)
-      (assoc :write-buffer (ByteBuffer/wrap request))))
+      (assoc :write-buffer (ByteBuffer/wrap request) :slot x)))
 
-(def asking-bytes (args->bytes [:ASKING]))
+(def ^"[B" asking-bytes (args->bytes [:ASKING]))
 
-(defn ask [{:keys [^bytes request] :as op} slot]
-  (-> op
-      (update :redirects inc)
-      (assoc :write-buffer (doto (ByteBuffer/allocate (+ (count asking-bytes) (count request)))
-                             (.put asking-bytes)
-                             (.put request)
-                             (.flip))
-             :asking? true)))
+(defn prefix-asking [^bytes request]
+  (doto (ByteBuffer/allocate (+ (alength asking-bytes) (alength request)))
+    (.put asking-bytes)
+    (.put request)
+    (.flip)))
+
+(defn ask [{:keys [request redirects] :as op} slot]
+  {:pre [(op? op) (integer? slot)]}
+  (assoc op :write-buffer (prefix-asking request) :asking? true :redirects (inc redirects) :slot slot))
 
 (defn finish [{:keys [action ^Future timeout-future] :as op} result]
+  {:pre [(op? op)]}
   (.cancel timeout-future true)
   (action result))
 
-;; [ask-reply (.get (.root parser) 0)
-;;  reply     (.get (.root parser) 1)]
+(def max-redirects 20)
 
-(defn complete [{:keys [action ^Future timeout-future ^ReplyParser parser asking?] :as op} {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
+(defn complete [{:keys [action ^Future timeout-future ^ReplyParser parser asking? redirects] :as op} {:keys [^ConcurrentLinkedDeque dispatch-queue] :as client}]
   (let [reply (.get (.root parser) (if asking? 1 0))]
-    (if (reroute? reply)
+    (if (and (reroute? reply) (< redirects max-redirects))
       (let [[slot address] (rerouted-to reply)]
         (if (moved? reply)
           (do (debug "-> Redirected to slot" (str "[" slot "]") "located at" address)
@@ -178,18 +188,14 @@
 
 (defn write-operation [args action timeout-fut]
   {:pre [(vector? args)]}
-  (let [slot  (if-let [k (args->key args)]
-                (hash-slot (.getBytes ^String k))
-                -1)]
-    (let [request (args->bytes args)]
-      {:slot           slot
-       :redirects      0
-       :request        request
-       :write-buffer        (ByteBuffer/wrap request)
-       :action         action
-       :timeout-future timeout-fut})))
+  (let [request (args->bytes args)]
+    {:redirects      0
+     :request        request
+     :write-buffer   (ByteBuffer/wrap request)
+     :action         action
+     :timeout-future timeout-fut}))
 
-(defrecord RedisClient [seeds ^Selector selector connections slot-cache ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
+(defrecord RedisClient [seeds ^Selector selector connections command-cache slot-cache ^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor]
   Closeable
   (close [this]
     (.addLast dispatch-queue [:shutdown])
@@ -221,14 +227,8 @@
                       (.setOption (StandardSocketOptions/TCP_NODELAY) false))]
     (->SocketConnection channel address read-buffer read-queue write-queue)))
 
-(def byte-array-class (Class/forName "[B"))
-
-(defn op? [{:keys [write-buffer request timeout-future] :as op}]
-  (and (instance? ByteBuffer write-buffer)
-       (instance? byte-array-class request)
-       (instance? Future timeout-future)))
-
 (defn incomplete? [op]
+  {:pre [(op? op)]}
   (.hasRemaining ^ByteBuffer (:write-buffer op)))
 
 (defn complete? [op]
@@ -238,7 +238,7 @@
   (str "[" (if (bit-test x 0) "R" "-") (if (bit-test x 2) "W" "-") (if (bit-test x 3) "C" "-") "]"))
 
 (defn remote-address [^SelectionKey k]
-  (.getRemoteAddress (.channel k)))
+  (.getRemoteAddress ^SocketChannel (.channel k)))
 
 (defn set-op!
   "Sets interested ops."
@@ -268,19 +268,18 @@
 (defn handle-read! [client ^SelectionKey k]
   (let [^SocketChannel channel (.channel k)
         {:keys [^ConcurrentLinkedDeque read-queue ^ByteBuffer read-buffer] :as conn} (.attachment k)]
-    (loop [n (.read channel (doto read-buffer
-                              (.clear)))]
+    (loop [n (.read channel (doto read-buffer (.clear)))]
       (cond
         (= -1 n)  (do (warn (remote-address k) "connection closed")
                       (cleanup-connection client conn))
         (zero? n) (debug (remote-address k) "no bytes read")
-        :else     (let [_ (.flip read-buffer)
+        :else     (let [_  (.flip read-buffer)
                         ba (byte-array n)
-                        _ (.get read-buffer ba)
-                        _ (trace-bytes ba (str (remote-address k) " read " n " byte(s)"))]
+                        _  (.get read-buffer ba)
+                        _  (trace-bytes ba (str (remote-address k) " read " n " byte(s)"))]
                     (loop [buffer ba]
                       (let [op (.getFirst read-queue)
-                            [outcome overflow] (parse op buffer)]
+                            [outcome ^bytes overflow] (parse op buffer)]
                         (cond
                           (= outcome ReplyParser/PARSE_INCOMPLETE)
                           (debug (remote-address k) "waiting for more byte(s)")
@@ -353,16 +352,19 @@
 (defmethod dispatch :shutdown [connections {:keys [seeds ^Selector selector] :as client} _]
   (throw shutdown-exception))
 
+(defn open-connection [{:keys [seeds ^Selector selector connections] :as client} address]
+  (let [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} (socket-connection address)]
+    (if (.connect channel address)
+      (do (debug address "connection has been established immediately, registering" (ops->str OP_READ))
+          (.register channel selector OP_READ conn))
+      (do (debug address "connection cannot be established immediately, registering" (ops->str OP_CONNECT))
+          (.register channel selector OP_CONNECT conn)))
+    (swap! connections assoc address conn)
+    conn))
+
 (defn resolve-connection [{:keys [seeds ^Selector selector connections] :as client} address]
   (or (get @connections address)
-      (let [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} (socket-connection address)]
-        (if (.connect channel address)
-          (do (debug address "connection has been established immediately, registering" (ops->str OP_READ))
-              (.register channel selector OP_READ conn))
-          (do (debug address "connection cannot be established immediately, registering" (ops->str OP_CONNECT))
-              (.register channel selector OP_CONNECT conn)))
-        (swap! connections assoc address conn)
-        conn)))
+      (open-connection client address)))
 
 (defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache] :as client} [_ op addr]]
   (let [conns            @connections
@@ -386,7 +388,7 @@
                   (finish op (ex-info "Connection closed when writing" {})))
               (let [k (.keyFor channel selector)]
                 (if (complete? op)
-                  (do (trace-bytes (:request op) (str address " done writing op: " (:write-buffer op)))
+                  (do (trace-bytes (:request op) (str address " done writing op " (:write-buffer op)))
                       (.addLast read-queue (flip op))
                       (ignore-op! k OP_WRITE)
                       (set-op! k OP_READ))
@@ -446,29 +448,68 @@
 
 (defn send-command
   ([client args]
-   (send-command client nil args))
-  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor ^Selector selector] :as client} address args]
+   (send-command client args nil))
+  ([client args address]
+   (send-command client args address (promise)))
+  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor ^Selector selector] :as client} args address f]
    {:pre [(vector? args)]}
-   (let [p           (promise)
-         timeout     (ex-info "Operation timed out" {:timeout? true :args args})
-         fut         (.schedule scheduled-executor ^Runnable (fn [] (deliver p timeout)) 10000 (TimeUnit/MILLISECONDS))
-         op          (write-operation args p fut)]
+   (let [timeout     (ex-info "Operation timed out" {:timeout? true :args args})
+         fut         (.schedule scheduled-executor ^Runnable (fn [] (f timeout)) 10000 (TimeUnit/MILLISECONDS))
+         op          (write-operation args f fut)]
      (.addLast dispatch-queue (if (instance? InetSocketAddress address) [:resolve op address] [:resolve op]))
      (.wakeup selector)
-     p)))
+     f)))
 
-(defn connect [host ^long port]
-  (let [selector (Selector/open)
-        seeds    #{(InetSocketAddress. (str host) port)}
-        executor (doto (ScheduledThreadPoolExecutor. 1) ;; used for timeouts, completing & rerouting operations
-                   (.setRemoveOnCancelPolicy true))
-        client   (->RedisClient seeds selector (atom {}) (atom {}) (ConcurrentLinkedDeque.) executor)
-        io-fn    (fn []
-                   (try
-                     (nio-loop client)
-                     (catch Exception err
-                       (error err))))]
-    (assoc client :io-thread (doto (Thread. io-fn (str "RedisIO")) (.start)))))
+(defn connect
+  ([{:keys [seeds]}]
+   (let [selector (Selector/open)
+         executor (doto (ScheduledThreadPoolExecutor. 1) ;; used for timeouts
+                    (.setRemoveOnCancelPolicy true))
+         client   (->RedisClient seeds selector (atom {}) (atom {}) (atom {}) (ConcurrentLinkedDeque.) executor)
+         io-fn    (fn []
+                    (try
+                      (nio-loop client)
+                      (catch Exception err
+                        (error err))))]
+     (assoc client :io-thread (doto (Thread. io-fn (str "RedisProtocol-IO")) (.start)))))
+  ([host port] (connect {:seeds #{(InetSocketAddress. (str host) ^long port)}})))
+
+(defn connect-all
+  "Discovers and connects to each cluster node."
+  [conn]
+  (let [cluster-nodes-reply @(send-command conn [:cluster :nodes])]
+    (when (instance? byte-array-class cluster-nodes-reply)
+      (let [cluster-nodes (util/parse-cluster-nodes (util/ascii-str cluster-nodes-reply))]
+        (doseq [node cluster-nodes]
+          (debug "resolving:" (:redis/address node))
+          (resolve-connection conn (:redis/address node)))
+
+        (doseq [node cluster-nodes]
+          (debug "pinging" (:redis/address node))
+          @(send-command conn [:ping] (:redis/address node))))))
+  conn)
+
+(defn resp->persistent [x]
+  (cond (instance? redis.resp.Array x)        (mapv resp->persistent x)
+        (instance? redis.resp.SimpleString x) (.message ^redis.resp.SimpleString x)
+        :else x))
+
+(defn command->key-mapping [[command-name arity flags key-pos-first key-pos-last step & _]]
+  [(keyword (util/ascii-str command-name))
+   {:arity   arity
+    :flags   (set (map keyword flags))
+    :key-pos [key-pos-first key-pos-last]
+    :step    step}])
+
+(defn update-command-cache
+  "Updates the cached mappings between commands and key positions using the Redis command COMMAND.
+  See http://redis.io/commands/command."
+  [{:keys [command-cache] :as conn}]
+  (->> @(send-command conn [:command])
+       resp->persistent
+       (map command->key-mapping)
+       (reduce conj {})
+       (swap! command-cache merge)))
 
 (comment
   (with-open [client (connect "172.17.0.2" 7000)]
@@ -481,14 +522,22 @@
           r2 (send-command client ["get" "bar"])]
       [@r1 @r2]))
 
-  (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client ["cluster" "slots"]))
+  (with-open [client (connect "10.18.10.1" 6379)]
+    (connect-all client))
+
+  (def commands
+    (with-open [client (connect "10.18.10.2" 6379)]
+      (resp->persistent @(send-command client [:command]))))
 
   (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client ["cluster" "nodes"]))
+    (update-command-cache client)
+    client)
+
+  (with-open [client (connect "10.18.10.2" 6379)]
+    @(send-command client [:cluster :nodes]))
 
   (with-open [client (connect "10.18.10.2" 7000)]
-    @(send-command client ["cluster" "slots"]))
+    @(send-command client [:cluster :slots]))
 
   (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client ["info"])))
+    @(send-command client [:info])))

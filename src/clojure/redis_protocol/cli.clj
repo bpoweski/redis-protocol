@@ -1,4 +1,4 @@
-(ns redis-protocol.main
+(ns redis-protocol.cli
   (:refer-clojure :exclude [benchmark])
   (:require [redis-protocol.core :as redis]
             [taoensso.timbre :as timbre]
@@ -95,9 +95,9 @@
 
 
 (defn usage [options-summary]
-  (->> ["redis-protocol.main"
+  (->> ["redis-protocol.cli"
         ""
-        "Usage: lein run -m redis-protocol.main [OPTIONS]"
+        "Usage: lein run -m redis-protocol.cli [OPTIONS]"
         ""
         "Options:"
         options-summary]

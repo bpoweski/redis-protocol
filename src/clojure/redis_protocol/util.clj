@@ -91,8 +91,11 @@
       (first (.root parser))
       (throw (ex-info "parse incomplete" {})))))
 
-(defn ascii-bytes [s]
+(defn ^"[B" ascii-bytes [s]
   (.getBytes s (java.nio.charset.Charset/forName "ASCII")))
+
+(defn ascii-str [^bytes ba]
+  (String. ba (java.nio.charset.Charset/forName "ASCII")))
 
 (defn utf-16le-bytes [s]
   (.getBytes s (java.nio.charset.Charset/forName "UTF-16LE")))

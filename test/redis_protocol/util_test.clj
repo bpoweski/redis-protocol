@@ -16,6 +16,9 @@
   (is (= 0x58ce (crc16 (ascii-bytes "hae9Napahngaikeethievubaibogiech"))))
   (is (= 0x4fd6 (crc16 (ascii-bytes "Hello, World!")))))
 
+(deftest ascii-str-test
+  (is (= "1234" (ascii-str (ascii-bytes "1234")))))
+
 (deftest to-bytes-test
   (is (bytes= (ascii-bytes "string") (to-bytes "string")))
   (is (bytes= "SET" :SET))

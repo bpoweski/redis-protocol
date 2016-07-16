@@ -40,8 +40,6 @@
      (.drainTo q ^Collection a max)
      a)))
 
-;; http://rox-xmlrpc.sourceforge.net/niotut/#The client
-
 (defn arg-length [^bytes ba]
   (+ 1 (count (str (alength ba))) 2 (alength ba) 2))
 
@@ -66,10 +64,6 @@
         (when (seq more)
           (recur more (+ pos (alength ba-prefix) (alength ba) 2)))))
     result))
-
-;; naive implementation
-(defn args->key [[command & rest]]
-  (first rest))
 
 (defn hash-slot
   "Calculates a Redis hash slot.
@@ -97,6 +91,19 @@
                  (util/crc16 ba (inc s) (- e s 1))
                  (util/crc16 ba))))))
        cluster-hash-slots))
+
+(defn routable-slot
+  "Returns the key(s) using command definitions returned by COMMAND."
+  [[command & _ :as args] command-defs]
+  (when-let [{[start stop] :key-pos :keys [flags step]} (get command-defs command (get command-defs (keyword (str/lower-case (name command)))))]
+    (when-not (or (= 0 step) (:movablekeys flags) (:asking flags))
+      (let [[slot & more] (->> args
+                               (drop start)
+                               (drop-last (- -1 stop))
+                               (take-nth step)
+                               (map #(some-> % util/to-bytes hash-slot)))]
+        (when (every? (partial = slot) more)
+          slot)))))
 
 (defn trace-bytes [buf msg]
   (trace (let [^String byte-str (with-out-str (bs/print-bytes buf))
@@ -366,12 +373,12 @@
   (or (get @connections address)
       (open-connection client address)))
 
-(defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache] :as client} [_ op addr]]
-  (let [conns            @connections
-        resolved-conn    (if-let [address (or addr (get @slot-cache (:slot op)))]
-                           (resolve-connection client address)
-                           (or (rand-nth (vals conns))
-                               (resolve-connection client (rand-seed client))))]
+(defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache command-cache] :as client} [_ op addr]]
+  (let [conns         @connections
+        resolved-conn (if-let [address (or addr (get @slot-cache (:slot op)))]
+                        (resolve-connection client address)
+                        (or (rand-nth (vals conns))
+                            (resolve-connection client (rand-seed client))))]
     (.addFirst dispatch-queue [:write op resolved-conn])))
 
 (defmethod dispatch :write [connections {:keys [^Selector selector] :as client} [_ op conn]]
@@ -447,15 +454,19 @@
       (.close selector))))
 
 (defn send-command
+  "Sends a command vector to Redis using client"
   ([client args]
    (send-command client args nil))
   ([client args address]
    (send-command client args address (promise)))
-  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor ^Selector selector] :as client} args address f]
+  ([{:keys [^ConcurrentLinkedDeque dispatch-queue ^ScheduledThreadPoolExecutor scheduled-executor ^Selector selector command-cache] :as client} args address f]
    {:pre [(vector? args)]}
-   (let [timeout     (ex-info "Operation timed out" {:timeout? true :args args})
-         fut         (.schedule scheduled-executor ^Runnable (fn [] (f timeout)) 10000 (TimeUnit/MILLISECONDS))
-         op          (write-operation args f fut)]
+   (let [timeout (ex-info "Operation timed out" {:timeout? true :args args})
+         fut     (.schedule scheduled-executor ^Runnable (fn [] (f timeout)) 10000 (TimeUnit/MILLISECONDS))
+         op      (write-operation args f fut)
+         op      (if-let [slot (routable-slot args @command-cache)]
+                   (assoc op :slot slot)
+                   op)]
      (.addLast dispatch-queue (if (instance? InetSocketAddress address) [:resolve op address] [:resolve op]))
      (.wakeup selector)
      f)))
@@ -489,7 +500,9 @@
           @(send-command conn [:ping] (:redis/address node))))))
   conn)
 
-(defn resp->persistent [x]
+(defn resp->persistent
+  "Recursively converts redis.resp.Array results into persistent data structures."
+  [x]
   (cond (instance? redis.resp.Array x)        (mapv resp->persistent x)
         (instance? redis.resp.SimpleString x) (.message ^redis.resp.SimpleString x)
         :else x))
@@ -530,7 +543,7 @@
       (resp->persistent @(send-command client [:command]))))
 
   (with-open [client (connect "10.18.10.2" 6379)]
-    (update-command-cache client)
+    (def command-cache (update-command-cache client))
     client)
 
   (with-open [client (connect "10.18.10.2" 6379)]
@@ -540,4 +553,5 @@
     @(send-command client [:cluster :slots]))
 
   (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client [:info])))
+    @(send-command client [:info]))
+  )

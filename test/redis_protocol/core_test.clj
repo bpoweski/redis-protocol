@@ -40,6 +40,38 @@
   (is (= 0 (hash-slot (.getBytes "super-long-key{}"))))
   (is (= 4092 (hash-slot (.getBytes "{")))))
 
+(def commands
+  {:get            {:arity  2 :flags #{:fast :readonly} :key-pos [1 1] :step 1}
+   :msetnx         {:arity -3 :flags #{:denyoom :write} :key-pos [1 -1] :step 2}
+   :mget           {:arity -2 :flags #{:readonly} :key-pos [1 -1] :step 1}
+   :cluster        {:arity -2 :flags #{:admin} :key-pos [0 0] :step 0}
+   :eval           {:arity -3 :flags #{:movablekeys :noscript} :key-pos [0 0] :step 0}
+   :info           {:arity -1 :flags #{:stale :loading} :key-pos [0 0] :step 0}
+   :mset           {:arity -3 :flags #{:denyoom :write} :key-pos [1 -1] :step 2}
+   :blpop          {:arity -3 :flags #{:write :noscript} :key-pos [1 -2] :step 1}
+   :sort           {:arity -2 :flags #{:denyoom :write :movablekeys} :key-pos [1 1] :step 1}
+   :asking         {:arity  1 :flags #{:fast} :key-pos [0 0] :step 0}
+   :restore-asking {:arity -4 :flags #{:denyoom :write :asking} :key-pos [1 1] :step 1}})
+
+(deftest routable-slot-test
+  (is (= 12182 (routable-slot [:get "foo"] commands)))
+  (is (= 12182 (routable-slot [:GET "foo"] commands)))
+  (is (nil? (routable-slot [:asking :get "foo"] commands)))
+  (is (nil? (routable-slot [:restore-asking "foo" "bar"] commands)))
+  (is (nil? (routable-slot [:cluster :nodes] commands)))
+  (is (nil? (routable-slot [:mget] commands)))
+  (is (nil? (routable-slot [:info] commands)))
+  (is (= 247 (routable-slot [:blpop "list1:{10}" "list2:{10}" "list3:{10}" 0] commands)))
+  (is (nil? (routable-slot [:eval "foo" "bar"] commands)))
+  (is (= 247 (routable-slot [:mget "key:{10}:bar"] commands)))
+  (is (= 247 (routable-slot [:mget "key:{10}:bar"  "key:{10}:baz"] commands)))
+  (is (= 247 (routable-slot [:msetnx "key:{10}:bar" "val" "key:{10}:baz" "val"] commands)))
+  (is (nil? (routable-slot [:mget "key:{10}:bar"  "key:{11}:baz"] commands)))
+  (is (= 247 (routable-slot [:mset "key:{10}:bar" "x" "key:{10}:baz" "y"] commands)))
+  (is (nil? (routable-slot [:mset "key:{10}:bar" "x" "key:{11}:baz" "y"] commands)))
+  (is (nil? (routable-slot [:sort "mylist" :LIMIT 0 10] commands)))
+  (is (nil? (routable-slot [:sort "mylist"] commands))))
+
 (deftest command->key-mapping-test
   (is (= [:getbit {:arity 3 :flags #{:readonly :fast} :key-pos [1 1] :step 1}]
          (command->key-mapping [(util/ascii-bytes "getbit") 3 ["readonly" "fast"] 1 1 1]))))

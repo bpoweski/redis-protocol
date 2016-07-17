@@ -5,6 +5,7 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[byte-streams "0.2.2"]
                  [com.taoensso/timbre "4.3.1"]
+                 [com.taoensso/tufte "1.0.0-RC2"]
                  [com.taoensso/encore "2.52.1"]
                  [org.clojure/clojure "1.7.0"]
                  [org.clojure/core.async "0.2.374"]

@@ -38,11 +38,19 @@ action bulk_reply_content_start {
 }
 
 action bulk_reply_body {
-  println("check: " + (fpc - mark) + " " + (char)fc);
+  int consumed = (fpc - mark + 1);
+  int available = (pe - fpc);
 
-  if ((fpc - mark + 1) == bulkLength) {
-    println("read: " + (fpc - mark + 1) + " chars, exiting");
+  // println("check: " + (fpc - mark) + " " + (char)fc + " pe: " + pe + ", fpc: " + fpc + ", available: " + available);
+
+  if (consumed == bulkLength) {
+    //println("read: " + (fpc - mark + 1) + " chars, exiting");
     fnext resp_end_of_bulk;
+  } else if ((bulkLength - consumed) == 1 || available == 1) {
+    //println("only one char to consume");
+  } else {
+    //println("jumping ahead to: " + Math.min(pe - 1, (mark + bulkLength - 1)));
+    fexec Math.min(pe - 1, (mark + bulkLength - 1));
   }
 }
 
@@ -204,7 +212,7 @@ public class ReplyParser {
   }
 
   public void logReply() {
-    println(root.toString());
+    // println(root.toString());
   }
 
   private void popMultiBulk() {
@@ -251,31 +259,31 @@ public class ReplyParser {
     eof = data.length;
     pe  = data.length;
 
-    println("============================");
-    println("Parse:\n" + new String(data));
+    // println("============================");
+    // println("Parse:\n" + new String(data));
 
     %% write exec;
 
-    switch(parseState) {
-      case PARSE_NOT_STARTED:
-        print("PARSE_NOT_STARTED ");
-        break;
-      case PARSE_ERROR:
-        print("PARSE_ERROR ");
-        break;
-      case PARSE_OVERFLOW:
-        println("PARSE_OVERFLOW ");
-        break;
-      case PARSE_INCOMPLETE:
-        print("PARSE_INCOMPLETE ");
-        break;
-      case PARSE_COMPLETE:
-        print("PARSE_COMPLETE ");
-        break;
-    }
-
-    logReply();
-    println("");
+    // switch(parseState) {
+    //   case PARSE_NOT_STARTED:
+    //     print("PARSE_NOT_STARTED ");
+    //     break;
+    //   case PARSE_ERROR:
+    //     print("PARSE_ERROR ");
+    //     break;
+    //   case PARSE_OVERFLOW:
+    //     println("PARSE_OVERFLOW ");
+    //     break;
+    //   case PARSE_INCOMPLETE:
+    //     print("PARSE_INCOMPLETE ");
+    //     break;
+    //   case PARSE_COMPLETE:
+    //     print("PARSE_COMPLETE ");
+    //     break;
+    // }
+    //
+    // logReply();
+    // println("");
 
     return parseState;
   }
@@ -286,7 +294,6 @@ public class ReplyParser {
 
   public static void main(String[] args) throws Exception {
     ReplyParser parser = new ReplyParser(1);
-    LOG.info("parser.parse: " + parser.parse(java.nio.file.Files.readAllBytes(new java.io.File("/Users/bpoweski/Projects/getaroom/redis-protocol/private_scripts/response.bin").toPath())));
 
     // error
     // new ReplyParser().parse("-Error message\r\n");
@@ -300,12 +307,12 @@ public class ReplyParser {
     // println("" + incremental.parse("\n"));
 
 
-    // println("=== Incremental String ===");
-    // ReplyParser incrementalString = new ReplyParser();
-    // println("" + incrementalString.parse("$52\r\n"));
-    // println("" + incrementalString.parse(":20160705:\r\n160705:T::DBL:CV-DX"));
-    // println("" + incrementalString.parse("::2:100:Y:Y:Y:Y:Y:Y:Y\r\n"));
-    // println("" + new String((byte[])incrementalString.root.get(0)));
+    println("=== Incremental String ===");
+    ReplyParser incrementalString = new ReplyParser();
+    println("" + incrementalString.parse("$52\r\n"));
+    println("" + incrementalString.parse(":20160705:\r\n160705:T::DBL:CV-DX"));
+    println("" + incrementalString.parse("::2:100:Y:Y:Y:Y:Y:Y:Y\r\n"));
+    println("" + new String((byte[])incrementalString.root.get(0)));
 
     // new ReplyParser().parse("-ERR wrong number of arguments for 'get' command\r\n");
     //

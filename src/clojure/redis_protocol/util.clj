@@ -87,13 +87,6 @@
 (defn buffer= [^ByteBuffer x ^ByteBuffer y]
   (zero? (.compareTo x y)))
 
-(defn parse-str [^String s]
-  (let [parser (ReplyParser.)
-        state  (.parse parser s)]
-    (if (= state (ReplyParser/PARSE_COMPLETE))
-      (first (.root parser))
-      (throw (ex-info "parse incomplete" {})))))
-
 (defn ^"[B" ascii-bytes [^String s]
   (.getBytes s (java.nio.charset.Charset/forName "ASCII")))
 

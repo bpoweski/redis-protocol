@@ -1,6 +1,6 @@
 (ns redis-protocol.parser-test
   (:require [clojure.test :refer :all]
-            [redis-protocol.util :as util :refer [parse-str]]
+            [redis-protocol.util :as util]
             [redis-protocol.core :as c]
             [clojure.string :as str]
             [clojure.java.io :as io]
@@ -32,8 +32,14 @@
                   nil)
     (.importClass @#'clojure.core/*ns* (Class/forName full-classname))))
 
-(comment
-  (reload))
+(reload)
+
+(defn parse-str [^String s]
+  (let [parser (ReplyParser.)
+        state  (.parse parser s)]
+    (if (= state (ReplyParser/PARSE_COMPLETE))
+      (first (.root parser))
+      (throw (ex-info "parse incomplete" {})))))
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
@@ -79,5 +85,7 @@
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
       (is (util/bytes= (.getOverflow parser) (.getBytes "+O")))))
   (testing "Multiple Replies"
-    (let [parser (ReplyParser. 2)]
-      (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))))
+    (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "+OK\r\n:1\r\n")))
+    (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "*0\r\n*0\r\n")))
+    (is (= ReplyParser/PARSE_INCOMPLETE (.parse (ReplyParser. 3) "*0\r\n*0\r\n")))
+    (is (= ReplyParser/PARSE_OVERFLOW (.parse (ReplyParser. 1) "*0\r\n*0\r\n")))))

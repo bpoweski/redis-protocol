@@ -77,7 +77,8 @@ action bulk_reply {
 }
 
 action push_empty_array {
-  emit(EMPTY_ARRAY);
+  emit(new Array(0, currentParent));
+  popArray();
 }
 
 action push_null_array {
@@ -101,8 +102,8 @@ action check_if_complete {
 }
 
 action complete {
-  if (currentParent.isFull()) {
-    println("complete:");
+  if (root.isComplete()) {
+    println("complete: true");
     parseState = PARSE_COMPLETE;
     fnext overflow;
   }
@@ -173,7 +174,7 @@ resp_item           = resp_simple  |
 resp_array_items    := (resp_item >debug @check_if_complete)+ ;
 
 overflow            = any*;
-main                := (resp_item @complete)+ <: overflow ${ parseState = PARSE_OVERFLOW; fhold; fbreak; };
+main                := (resp_item %debug @complete)+ <: overflow ${ parseState = PARSE_OVERFLOW; fhold; fbreak; };
 
 }%%
 
@@ -242,11 +243,11 @@ public class ReplyParser {
   }
 
   public static void println(String s) {
-    //System.out.println(s);
+    // System.out.println(s);
   }
 
   public static void print(String s) {
-    //System.out.print(s);
+    // System.out.print(s);
   }
 
   public void printchars(byte[] data, int start, int stop) {
@@ -282,10 +283,6 @@ public class ReplyParser {
     }
 
     print("\n");
-  }
-
-  public void logReply() {
-    //println(root.toString());
   }
 
   private void popArray() {
@@ -362,38 +359,15 @@ public class ReplyParser {
     return parse(data.getBytes());
   }
 
-
   public static void main(String[] args) throws Exception {
     ReplyParser parser = new ReplyParser(1);
-    // println("=====");
-    // println("" + parser.parse("+OK\r\n"));
-    // parser.logReply();
 
-    // parser = new ReplyParser(1);
-    // println("=====");
-    // println("" + parser.parse("-MOVED foo\r\n"));
-    // parser.logReply();
-
-    // parser = new ReplyParser(1);
-    // println("=====");
-    // println("" + parser.parse(":100\r\n"));
-    // parser.logReply();
-
-    // parser = new ReplyParser(1);
-    // println("=====");
-    // println("" + parser.parse(":"));
-    // println("" + parser.parse("100\r"));
-    // println("" + parser.parse("\n"));
-    // parser.logReply();
-
-    parser = new ReplyParser(1);
     int parseState = -1;
     println("=====");
     for (int i = 0; i < args.length; i++) {
         println("Input: " + args[i]);
         parseState = (int)parser.parse(args[i]);
         println("" + parseState);
-        parser.logReply();
     }
 
     if (parseState == 3) {
@@ -401,16 +375,5 @@ public class ReplyParser {
       byte[] overflow = parser.getOverflow();
       parser.printchars(overflow, 0, overflow.length);
     }
-
-    // parser = new ReplyParser(1);
-    // println("=====");
-    // println("" + parser.parse("$-1\r\n"));
-    // parser.logReply();
-
-    // parser = new ReplyParser(1);
-    // String dir = "/Users/bpoweski/Projects/getaroom/redis-protocol/private_scripts";
-    // println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_0.bin"))));
-    //println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_1.bin"))));
-    //println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_2.bin"))));
   }
 }

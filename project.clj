@@ -1,5 +1,5 @@
 (defproject redis-protocol "0.1.0-SNAPSHOT"
-  :description "FIXME: write description"
+  :description "A low level Redis Cluster library"
   :url "http://github.com/bpoweski/redis-protocol"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
@@ -13,14 +13,23 @@
                  [org.clojure/tools.cli "0.3.5"]]
   :profiles {:dev {:dependencies [[com.spotify/docker-client "5.0.1"] ;; it's shocking this hasn't cause dependency conflicts yet
                                   [com.taoensso/carmine "2.13.0-RC1"]
+                                  [redis.clients/jedis "2.9.0"]
                                   [criterium "0.4.4"]
                                   [org.clojure/tools.namespace "0.2.9"]]}
              :test {:plugins [[venantius/ultra "0.4.1"]]
                     :ultra {:repl  false
-                            :tests {:color-scheme :default}}}}
-  :aliases {"build" ["do" ["clean"] ["ragel"] ["javac"]]}
+                            :tests {:color-scheme :default}}}
+
+             :repl {:dependencies [[perforate "0.3.3"]]}
+
+             :perf {:plugins [[perforate "0.3.3"]]
+                    :dependencies [[redis.clients/jedis "2.9.0"]
+                                   [com.taoensso/timbre "4.3.1"]]
+                    :perforate {:benchmark-paths ["src/benchmarks"]}}}
   :plugins [[lein-ragel "0.1.0"]]
   :source-paths ["src/clojure"]
   :java-source-paths ["src/java" "target/ragel"]
   :ragel-source-paths ["src/ragel"]
-  :prep-tasks ["ragel" "javac"])
+  :prep-tasks ["ragel" "javac"]
+  :aliases {"build" ["do" ["clean"] ["ragel"] ["javac"]]
+            "perf"  ["with-profile" "+perf" "perforate"]})

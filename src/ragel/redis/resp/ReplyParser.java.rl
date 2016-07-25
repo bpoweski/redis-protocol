@@ -7,14 +7,14 @@ action mark {
   mark = fpc;
 }
 
-action delimted_reply {
+action simple_reply {
   String delimitedValue = new String(Arrays.copyOfRange(data, mark, fpc - 1));
+  emit(new SimpleString(delimitedValue));
+}
 
-  if (delimitedReplyType == ERROR_REPLY) {
-    emit(new Error(delimitedValue));
-  } else {
-    emit(new SimpleString(delimitedValue));
-  }
+action error_reply {
+  String delimitedValue = new String(Arrays.copyOfRange(data, mark, fpc - 1));
+  emit(new Error(delimitedValue));
 }
 
 action integer_reply {
@@ -29,8 +29,13 @@ action null_bulk_reply {
   emitNull();
 }
 
+#// |  1 |  0 | \r | \n |  B |  O  | ...
+#//    M         ^
 action bulk_header_start {
   bulkLength = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc)));
+
+  // hint the minimum size buffer needed to satisfy everything up-to the current bulk string for later incremental parsing
+  minimumBufferSize = Math.max(fpc + 2 + bulkLength + 2, pe);
 }
 
 action bulk_reply_content_start {
@@ -43,19 +48,31 @@ action bulk_reply_body {
 
   // println("check: " + (fpc - mark) + " " + (char)fc + " pe: " + pe + ", fpc: " + fpc + ", available: " + available);
 
+
   if (consumed == bulkLength) {
-    //println("read: " + (fpc - mark + 1) + " chars, exiting");
-    fnext resp_end_of_bulk;
-  } else if ((bulkLength - consumed) == 1 || available == 1) {
-    //println("only one char to consume");
-  } else {
-    //println("jumping ahead to: " + Math.min(pe - 1, (mark + bulkLength - 1)));
-    fexec Math.min(pe - 1, (mark + bulkLength - 1));
+    println("read: " + (fpc - mark + 1) + " chars, exiting");
+
+    if (root == currentParent) {
+        fnext ::main::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;
+    } else {
+        fnext ::resp_array_items::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;
+    }
   }
+
+  // if (consumed == bulkLength) {
+  //   //println("read: " + (fpc - mark + 1) + " chars, exiting");
+  //   fnext resp_end_of_bulk;
+  // } else if ((bulkLength - consumed) == 1 || available == 1) {
+  //   //println("only one char to consume");
+  // } else {
+  //   //println("jumping ahead to: " + Math.min(pe - 1, (mark + bulkLength - 1)));
+  //   fexec Math.min(pe - 1, (mark + bulkLength - 1));
+  // }
 }
 
 
 action bulk_reply {
+  println("bulk reply");
   emit(Arrays.copyOfRange(data, mark, mark + bulkLength));
 }
 
@@ -67,49 +84,96 @@ action push_null_array {
   emitNull();
 }
 
-action set_simple {
-  delimitedReplyType = SIMPLE_STRING_REPLY;
-}
-
-action set_error {
-  delimitedReplyType = ERROR_REPLY;
-}
-
-action start_array {
+action push_array {
   int len = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc - 1)));
   Array arr = new Array(len, currentParent);
   emit(arr);
 }
 
-action check_end_of_reply {
-  if (p == pe && pe == eof && root.isComplete()) {
-    parseState = PARSE_COMPLETE;
-  } else if (currentParent == root && root.isFull()) {
-    parseState = PARSE_OVERFLOW;
-    fhold;
-    fbreak;
+action check_if_complete {
+  if (currentParent.isComplete()) {
+    println("check_if_complete: true");
+    popArray();
+    fret;
+  } else {
+    println("check_if_complete: false");
   }
 }
 
-crlf               = "\r\n";
+action complete {
+  if (currentParent.isFull()) {
+    println("complete:");
+    parseState = PARSE_COMPLETE;
+    fnext overflow;
+  }
+}
 
-# RESP Errors or Simple Strings
-resp_delimited     = ("+" >set_simple | "-" >set_error) ( any* -- crlf ) >mark crlf @delimted_reply;
+
+action check_if_finished {
+  if (currentParent == root && root.isComplete()) {
+      println("check_if_finished: true");
+      parseState = PARSE_COMPLETE;
+  } else {
+      println("check_if_finished: false");
+  }
+}
+
+action debug {
+  println("debug: fpc: " + fpc + ", pe: " + pe);
+  printchars(data, fpc, pe);
+  println(root.toString());
+}
+
+postpop {
+  println("postpop: fpc: " + fpc + ", pe: " + pe);
+  printchars(data, fpc, pe);
+  println(root.toString());
+
+  if (currentParent == root && root.isComplete()) {
+      println("check_if_finished: true");
+      parseState = PARSE_COMPLETE;
+  } else {
+      println("check_if_finished: false");
+  }
+}
+
+crlf                        = "\r\n";
+
+# RESP Simple
+resp_simple                 = "+" ((any* -- crlf) >mark crlf @simple_reply);
+
+# RESP Error
+resp_error                  = "-" (any* -- crlf) >mark crlf @error_reply;
 
 # RESP Integers
-resp_integer       = ":" ("-"? digit+) >mark crlf @integer_reply;
+resp_integer                = ":" ("-"? digit+) >mark crlf @integer_reply;
 
 # RESP Bulk Strings
-resp_bulk_empty    = "0" crlf{2} >empty_bulk_reply;
-resp_bulk_nil      = "-1" crlf >null_bulk_reply;
-resp_end_of_bulk   = crlf;
-resp_bulk_content  = ([1-9] digit*) >mark crlf >bulk_header_start %*bulk_reply_content_start (any >bulk_reply_body)* resp_end_of_bulk %bulk_reply;
-resp_bulk          = "$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content);
+resp_bulk_nil               = "-1" crlf @null_bulk_reply;
+resp_bulk_empty             = "0" crlf{2} @empty_bulk_reply;
+resp_end_of_bulk            = crlf;
+resp_bulk_content           = (([1-9] digit*) >mark crlf >bulk_header_start  any >mark (any >bulk_reply_body)* resp_end_of_bulk @bulk_reply);
+resp_bulk                   = "$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content);
 
 # RESP Arrays
-resp_array_header  = "*" ( ("-1" >mark crlf @push_null_array) | (digit+ >mark crlf @start_array) );
+resp_null_array             = "-1" crlf @push_null_array;
+resp_empty_array            = "0" crlf @push_empty_array;
+resp_non_empty_array_header = ([1-9] digit*) >mark crlf @push_array @{ println("new array: "); fcall resp_array_items; };
+resp_array_header           = (resp_null_array | resp_empty_array | resp_non_empty_array_header );
+resp_array                  = "*" (resp_null_array | resp_empty_array | resp_array_header);
 
-main := ( (resp_delimited | resp_integer | resp_bulk | resp_array_header) %check_end_of_reply)+;
+
+resp_item           = resp_simple  |
+                      resp_error   |
+                      resp_integer |
+                      resp_bulk    |
+                      resp_array;
+
+
+resp_array_items    := (resp_item >debug @check_if_complete)+ ;
+
+overflow            = any*;
+main                := (resp_item @complete)+ <: overflow ${ parseState = PARSE_OVERFLOW; fhold; fbreak; };
 
 }%%
 
@@ -120,6 +184,7 @@ import java.util.logging.Logger;
 import redis.resp.SimpleString;
 import redis.resp.Array;
 import redis.resp.Error;
+import java.nio.file.*;
 
 public class ReplyParser {
   private static Logger LOG = Logger.getLogger("redis.resp.ReplyParser");
@@ -136,7 +201,7 @@ public class ReplyParser {
   public static final int SIMPLE_STRING_REPLY  = 0;
   public static final int ERROR_REPLY          = 1;
 
-  public static final ArrayList<Object> EMPTY_ARRAY = new ArrayList<Object>();
+  public static final Array EMPTY_ARRAY = new Array(0);
 
   // parser state
   public final Array root;
@@ -147,9 +212,9 @@ public class ReplyParser {
   private byte[] data = null;
   private int delimitedReplyType = -1;
 
-  // incremental state
-  private int discardMarker = 0;
-  private byte[] previousBuffer = null;
+  // buffer size hint
+  private int minimumBufferSize = -1;
+
 
   // ragel members
   private int p;
@@ -159,6 +224,10 @@ public class ReplyParser {
   private int ts;
   private int cs;
   private int act;
+
+  // ragel stack variables
+  private int[] stack = new int[7];
+  private int top;
 
   %% write data;
 
@@ -173,14 +242,18 @@ public class ReplyParser {
   }
 
   public static void println(String s) {
-    // System.out.println(s);
+    //System.out.println(s);
   }
 
   public static void print(String s) {
-    // System.out.print(s);
+    //System.out.print(s);
   }
 
   public void printchars(byte[] data, int start, int stop) {
+    if (!"1".equals(System.getProperty("redis.resp.debug"))) {
+      return;
+    }
+
     print("|");
     for (int i = 0; i < stop - start; i++) {
       char ch = (char)data[start + i];
@@ -212,30 +285,28 @@ public class ReplyParser {
   }
 
   public void logReply() {
-    // println(root.toString());
+    //println(root.toString());
   }
 
-  private void popMultiBulk() {
+  private void popArray() {
     if (currentParent.isFull() && currentParent.parent != null) {
       currentParent = currentParent.parent;
-      popMultiBulk();
+      popArray();
     }
   }
 
   public void emit(Array newMultiBulk) {
     currentParent.addItem(newMultiBulk);
     currentParent = newMultiBulk;
-    popMultiBulk();
   }
 
   public void emit(Object value) {
+    println("adding " + value.toString() + " to " + currentParent.toString() + " with length " + currentParent.length);
     currentParent.addItem(value);
-    popMultiBulk();
   }
 
   public void emitNull() {
     currentParent.addItem(null);
-    popMultiBulk();
   }
 
   public byte[] getOverflow() {
@@ -246,44 +317,43 @@ public class ReplyParser {
 
   public Object parse(byte[] buffer) {
     if (data != null) {
-      byte[] previousBuffer = data;
-      data = new byte[previousBuffer.length + buffer.length];
-      System.arraycopy(previousBuffer, 0, data, 0, previousBuffer.length);
-      System.arraycopy(buffer, 0, data, previousBuffer.length, buffer.length);
+      int available = data.length - pe;
+
+      // check for room in the current buffer
+      if (available >= buffer.length) {
+
+          System.arraycopy(buffer, 0, data, pe, buffer.length);
+          eof += buffer.length;
+          pe  += buffer.length;
+
+      } else {
+
+          byte[] previousBuffer = data;
+          int previousDataLength = pe;
+          int dataLength = previousDataLength + buffer.length;
+
+          int newBufferSize = Math.max(dataLength, minimumBufferSize);
+
+          data = new byte[newBufferSize];
+
+          System.arraycopy(previousBuffer, 0, data, 0, previousDataLength);
+          System.arraycopy(buffer, 0, data, previousDataLength, buffer.length);
+
+          eof = dataLength;
+          pe  = dataLength;
+      }
+
     } else {
-      data = buffer;
-      p = 0;
-      parseState = PARSE_INCOMPLETE;
+
+      data              = buffer;
+      p                 = 0;
+      eof               = data.length;
+      pe                = data.length;
+      parseState        = PARSE_INCOMPLETE;
+      minimumBufferSize = data.length;
     }
 
-    eof = data.length;
-    pe  = data.length;
-
-    // println("============================");
-    // println("Parse:\n" + new String(data));
-
     %% write exec;
-
-    // switch(parseState) {
-    //   case PARSE_NOT_STARTED:
-    //     print("PARSE_NOT_STARTED ");
-    //     break;
-    //   case PARSE_ERROR:
-    //     print("PARSE_ERROR ");
-    //     break;
-    //   case PARSE_OVERFLOW:
-    //     println("PARSE_OVERFLOW ");
-    //     break;
-    //   case PARSE_INCOMPLETE:
-    //     print("PARSE_INCOMPLETE ");
-    //     break;
-    //   case PARSE_COMPLETE:
-    //     print("PARSE_COMPLETE ");
-    //     break;
-    // }
-    //
-    // logReply();
-    // println("");
 
     return parseState;
   }
@@ -292,51 +362,55 @@ public class ReplyParser {
     return parse(data.getBytes());
   }
 
+
   public static void main(String[] args) throws Exception {
     ReplyParser parser = new ReplyParser(1);
+    // println("=====");
+    // println("" + parser.parse("+OK\r\n"));
+    // parser.logReply();
 
-    // error
-    // new ReplyParser().parse("-Error message\r\n");
+    // parser = new ReplyParser(1);
+    // println("=====");
+    // println("" + parser.parse("-MOVED foo\r\n"));
+    // parser.logReply();
 
-    // new ReplyParser().parse("-Error incomplete");
+    // parser = new ReplyParser(1);
+    // println("=====");
+    // println("" + parser.parse(":100\r\n"));
+    // parser.logReply();
 
-    // println("=== Incremental ===");
-    // ReplyParser incremental = new ReplyParser();
-    // println("" + incremental.parse("-ERR"));
-    // println("" + incremental.parse("\r"));
-    // println("" + incremental.parse("\n"));
+    // parser = new ReplyParser(1);
+    // println("=====");
+    // println("" + parser.parse(":"));
+    // println("" + parser.parse("100\r"));
+    // println("" + parser.parse("\n"));
+    // parser.logReply();
 
+    parser = new ReplyParser(1);
+    int parseState = -1;
+    println("=====");
+    for (int i = 0; i < args.length; i++) {
+        println("Input: " + args[i]);
+        parseState = (int)parser.parse(args[i]);
+        println("" + parseState);
+        parser.logReply();
+    }
 
-    println("=== Incremental String ===");
-    ReplyParser incrementalString = new ReplyParser();
-    println("" + incrementalString.parse("$52\r\n"));
-    println("" + incrementalString.parse(":20160705:\r\n160705:T::DBL:CV-DX"));
-    println("" + incrementalString.parse("::2:100:Y:Y:Y:Y:Y:Y:Y\r\n"));
-    println("" + new String((byte[])incrementalString.root.get(0)));
+    if (parseState == 3) {
+      println("Overflow:");
+      byte[] overflow = parser.getOverflow();
+      parser.printchars(overflow, 0, overflow.length);
+    }
 
-    // new ReplyParser().parse("-ERR wrong number of arguments for 'get' command\r\n");
-    //
-    // // status
-    // new ReplyParser().parse("+OK\r\n".getBytes());
-    // new ReplyParser().parse("+OK_INCOMPLETE\r");
-    // ReplyParser overflow = new ReplyParser();
-    // overflow.parse("+OK\r\n+NEXT\r");
-    // byte[] overflowBytes = overflow.getOverflow();
-    //
-    // // integer
-    // new ReplyParser().parse(":1000\r\n");
-    // new ReplyParser().parse(":-1\r\n");
-    //
-    // // bulk strings
-    // new ReplyParser().parse("$6\r\nfoobar\r\n");
-    // new ReplyParser().parse("$-1\r\n");
-    // new ReplyParser().parse("$0\r\n\r\n");
-    //
-    // // array
-    // new ReplyParser().parse("*0\r\n");
-    // new ReplyParser().parse("*-1\r\n");
-    // new ReplyParser().parse("*3\r\n:1\r\n:2\r\n:3\r\n");
-    // new ReplyParser().parse("*2\r\n*3\r\n:1\r\n:2\r\n:3\r\n*2\r\n+Foo\r\n-Bar\r\n");
-    // new ReplyParser().parse("*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n");
+    // parser = new ReplyParser(1);
+    // println("=====");
+    // println("" + parser.parse("$-1\r\n"));
+    // parser.logReply();
+
+    // parser = new ReplyParser(1);
+    // String dir = "/Users/bpoweski/Projects/getaroom/redis-protocol/private_scripts";
+    // println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_0.bin"))));
+    //println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_1.bin"))));
+    //println("" + parser.parse(Files.readAllBytes(Paths.get(dir, "chunk_2.bin"))));
   }
 }

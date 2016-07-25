@@ -17,5 +17,5 @@ javac -Xlint:unchecked -g -cp target/classes -d target/classes $JAVA_FILE
 if [[ $DEBUG -eq "1" ]]; then
   jdb -classpath target/classes redis.resp.$CLASS_NAME
 else
-  java -cp target/classes redis.resp.$CLASS_NAME
+  java -cp target/classes redis.resp.$CLASS_NAME "$@"
 fi

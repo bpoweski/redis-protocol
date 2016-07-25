@@ -6,6 +6,9 @@
            (java.net InetSocketAddress)))
 
 
+(set! *warn-on-reflection* true)
+
+
 (def ^"[J" ^:private xmodem-crc16-lookup
   (long-array
    [0x0000 0x1021 0x2042 0x3063 0x4084 0x50a5 0x60c6 0x70e7
@@ -58,7 +61,7 @@
                                    (bit-and 0xff))))))))))
 
 
-(def utf8-charset (java.nio.charset.Charset/forName "UTF-8"))
+(def ^java.nio.charset.Charset utf8-charset (java.nio.charset.Charset/forName "UTF-8"))
 
 (defprotocol ByteSource
   (to-bytes [this]))
@@ -79,25 +82,25 @@
   (to-bytes ([this] this)))
 
 (defn bytes= [x y]
-  (java.util.Arrays/equals (to-bytes x) (to-bytes y)))
+  (java.util.Arrays/equals ^bytes (to-bytes x) ^bytes (to-bytes y)))
 
 (defn buffer= [^ByteBuffer x ^ByteBuffer y]
   (zero? (.compareTo x y)))
 
-(defn parse-str [s]
+(defn parse-str [^String s]
   (let [parser (ReplyParser.)
         state  (.parse parser s)]
     (if (= state (ReplyParser/PARSE_COMPLETE))
       (first (.root parser))
       (throw (ex-info "parse incomplete" {})))))
 
-(defn ^"[B" ascii-bytes [s]
+(defn ^"[B" ascii-bytes [^String s]
   (.getBytes s (java.nio.charset.Charset/forName "ASCII")))
 
-(defn ascii-str [^bytes ba]
+(defn ^String ascii-str [^bytes ba]
   (String. ba (java.nio.charset.Charset/forName "ASCII")))
 
-(defn utf-16le-bytes [s]
+(defn utf-16le-bytes [^String s]
   (.getBytes s (java.nio.charset.Charset/forName "UTF-16LE")))
 
 (def ^:dynamic *cli-print-indent* 0)
@@ -107,10 +110,10 @@
   (fn [x _]
     (class x)))
 
-(defmethod cli-print redis.resp.Error [error ^java.io.PrintWriter w]
+(defmethod cli-print redis.resp.Error [^redis.resp.Error error ^java.io.PrintWriter w]
   (.println w (str "(error) " (.message error))))
 
-(defmethod cli-print redis.resp.SimpleString [info ^java.io.PrintWriter w]
+(defmethod cli-print redis.resp.SimpleString [^redis.resp.SimpleString info ^java.io.PrintWriter w]
   (.println w (str (.message info))))
 
 (defmethod cli-print String [s ^java.io.PrintWriter w]
@@ -135,6 +138,9 @@
       (binding [*cli-print-indent* (+ *cli-print-indent* n-digits 2)]
         (cli-print v w)))))
 
+(defmethod cli-print (Class/forName "[B") [^bytes ba ^java.io.PrintWriter w]
+  (.println w (str "\"" (ascii-str ba) "\"")))
+
 (defn cli-format [reply]
   (with-open [str-writer (java.io.StringWriter.)
               print-writer (java.io.PrintWriter. str-writer)]
@@ -149,7 +155,7 @@
 
 (defn parse-cluster-node [s]
   (let [[id ip-port flags master ping-sent pong-recv config-epoch link-state slots] (str/split s #" " 9)
-        [ip port] (str/split ip-port #":")]
+        [^String ip port] (str/split ip-port #":")]
     {:redis/id           id
      :redis/address      (InetSocketAddress. ip (Integer/parseInt port))
      :redis/flags        (->> (str/split flags #",")
@@ -166,3 +172,23 @@
        io/reader
        line-seq
        (map parse-cluster-node)))
+
+(def ^"[C" printable-chars (char-array (map char (range 32 127))))
+
+(defn ^"[C" rand-chars [n unit]
+  (let [n-chars (* n (case unit :kb 1e3 :mb 1e6 :gb 1e9 1))
+        result  (char-array n-chars)
+        len     (alength printable-chars)]
+    (dotimes [idx n-chars]
+      (aset-char result idx (aget printable-chars (rand-int len))))
+    result))
+
+(defn decode-hexdump
+  "Decodes sequence of hexdumps separated by \newline\newline into a seq of byte arrays.  Useful recreating the sequence of packets that led to a parse error."
+  [s]
+  (for [block (str/split s #"\n\n")]
+    (->> block
+         str/split-lines
+         (mapcat #(drop-last 1 (str/split (str/triml %) #"\s+")))
+         (str/join)
+         (javax.xml.bind.DatatypeConverter/parseHexBinary))))

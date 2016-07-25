@@ -51,7 +51,8 @@
    :blpop          {:arity -3 :flags #{:write :noscript} :key-pos [1 -2] :step 1}
    :sort           {:arity -2 :flags #{:denyoom :write :movablekeys} :key-pos [1 1] :step 1}
    :asking         {:arity  1 :flags #{:fast} :key-pos [0 0] :step 0}
-   :restore-asking {:arity -4 :flags #{:denyoom :write :asking} :key-pos [1 1] :step 1}})
+   :restore-asking {:arity -4 :flags #{:denyoom :write :asking} :key-pos [1 1] :step 1}
+   :set            {:arity -3 :flags #{:denyoom :write} :key-pos [1 1] :step 1}})
 
 (deftest routable-slot-test
   (is (= 12182 (routable-slot [:get "foo"] commands)))
@@ -70,8 +71,13 @@
   (is (= 247 (routable-slot [:mset "key:{10}:bar" "x" "key:{10}:baz" "y"] commands)))
   (is (nil? (routable-slot [:mset "key:{10}:bar" "x" "key:{11}:baz" "y"] commands)))
   (is (nil? (routable-slot [:sort "mylist" :LIMIT 0 10] commands)))
-  (is (nil? (routable-slot [:sort "mylist"] commands))))
+  (is (nil? (routable-slot [:sort "mylist"] commands)))
+  (is (= 2976 (routable-slot [:set "key:2056943322" "]=!)29hsI5%0zW&X8y;jnd1/##Ix|a"] commands))))
 
 (deftest command->key-mapping-test
   (is (= [:getbit {:arity 3 :flags #{:readonly :fast} :key-pos [1 1] :step 1}]
          (command->key-mapping [(util/ascii-bytes "getbit") 3 ["readonly" "fast"] 1 1 1]))))
+
+(deftest build-slot-cache-test
+  (is (= {0 (InetSocketAddress. "10.18.10.1" 6379) 1 (InetSocketAddress. "10.18.10.1" 6379)}
+         (select-keys (build-slot-cache [[0 16383 [(util/ascii-bytes "10.18.10.1") 6379 (util/ascii-bytes "9585e909fdca01bb67efef17d076e513efc6da4a")]]]) (range 0 2)))))

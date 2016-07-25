@@ -1,9 +1,39 @@
 (ns redis-protocol.parser-test
   (:require [clojure.test :refer :all]
             [redis-protocol.util :as util :refer [parse-str]]
-            [redis-protocol.core :as c])
+            [redis-protocol.core :as c]
+            [clojure.string :as str]
+            [clojure.java.io :as io]
+            [clojure.java.shell :as sh]
+            [clojure.tools.trace :as t])
   (:import (redis.resp ReplyParser)))
 
+
+(defn reload
+  "Recompiles & reloads the ReplyParser to continue to work within the REPL."
+  []
+  (let [classname         "ReplyParser"
+        ragel-java-source (str "target/ragel/redis/resp/" classname ".java")
+        ragel-classfile   "target/classes/redis/resp/ReplyParser.class"
+        ragel-result      (sh/sh "ragel" "-J" (str "src/ragel/redis/resp/" classname ".java.rl") "-o" ragel-java-source)
+        full-classname    (str "redis.resp." classname)]
+    (when (not= 0 (:exit ragel-result))
+      (println  "Unsuccessful ragel compilation: " (:err ragel-result))
+      (assert false "ragel compilation failed"))
+    (let [javac-result (sh/sh "javac" "-Xlint:unchecked" "-g" "-cp" "target/classes" "-d" "target/classes" ragel-java-source)]
+      (when (not= 0 (:exit javac-result))
+        (println  "Unsuccessful javac compilation: " (:err javac-result))
+        (assert false "java compilation failed")))
+    (.defineClass (clojure.lang.DynamicClassLoader.)
+                  full-classname
+                  (with-open [buffer (java.io.ByteArrayOutputStream.)]
+                    (io/copy (io/file ragel-classfile) buffer)
+                    (.toByteArray buffer))
+                  nil)
+    (.importClass @#'clojure.core/*ns* (Class/forName full-classname))))
+
+(comment
+  (reload))
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
@@ -45,8 +75,9 @@
       (is (= [] (first (.root (get parsers 2)))))
       (is (= (ReplyParser/PARSE_COMPLETE) (.parse (get parsers 3) (.getOverflow (get parsers 2)))))
       (is (util/bytes= ":20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y" (ffirst (.root (get parsers 3))))))
-    (let [parser (ReplyParser. 2)]
-      (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))
     (let [parser (ReplyParser.)]
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
-      (is (util/bytes= (.getOverflow parser) (.getBytes "+O"))))))
+      (is (util/bytes= (.getOverflow parser) (.getBytes "+O")))))
+  (testing "Multiple Replies"
+    (let [parser (ReplyParser. 2)]
+      (is (= (ReplyParser/PARSE_COMPLETE) (.parse parser "+OK\r\n:1\r\n"))))))

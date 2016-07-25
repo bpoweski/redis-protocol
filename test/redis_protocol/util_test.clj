@@ -31,6 +31,7 @@
 (deftest cli-format-test
   (is (= "(error) MOVED 12182 10.18.10.5:6379\n" (cli-format (redis.resp.Error. "MOVED 12182 10.18.10.5:6379"))))
   (is (= "OK\n" (cli-format (redis.resp.SimpleString. "OK"))))
+  (is (= "\"10.18.10.4\"\n" (cli-format (ascii-bytes "10.18.10.4"))))
   (is (= "1) (integer) 10923\n" (cli-format (doto (redis.resp.Array. 1) (.add 10923)))))
   (is (= "(nil)\n" (cli-format nil))))
 
@@ -56,3 +57,7 @@
           :redis/link-state   :connected
           :redis/slots        "0-5460"}))
   (is (= 6 (count (parse-cluster-nodes (str/join "\n" sample-cluster-nodes))))))
+
+(deftest decode-hexdump-test
+  (is (bytes= (ascii-bytes "!CnY\r\n") (first (decode-hexdump "    21 43 6E 59 0D 0A                                      !CnY..")) ))
+  (is (= 2 (count (decode-hexdump (str/join "\n\n " (repeat 2 "    21 43 6E 59 0D 0A                                      !CnY..")))) )))

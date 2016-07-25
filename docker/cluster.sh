@@ -91,5 +91,6 @@ case "$1" in
         echo "$0 stop-nodes"
         echo "$0 restart"
         echo "$0 setup"
+        echo "$0 create-cluster"
         ;;
 esac

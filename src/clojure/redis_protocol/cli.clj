@@ -73,21 +73,22 @@
   `(let [start# (System/nanoTime)]
      [(do ~@body) (- (System/nanoTime) start#)]))
 
-(def ^"[C" printable-chars (char-array (map char (range 32 127))))
+(defn sub-random-value
+  "Generates and replaces random values per the following placeholders.
 
-(defn ^"[C" rand-chars [n unit]
-  (let [n-chars (* n (case unit :kb 1e3 :mb 1e6 :gb 1e9 1))
-        result  (char-array n-chars)
-        len     (alength printable-chars)]
-    (dotimes [idx n-chars]
-      (aset-char result idx (aget printable-chars (rand-int len))))
-    result))
+  __rand_int__      : Random integer between 0 and Integer/MAX_VALUE
+  __rand_str[arg]__ : Random string of printable characters using of size arg, where arg is `n(b|kb|mb|gb)`
 
-(defn sub-random-value [x]
+  examples:
+
+  key:__rand_int__       => key:134318, key:19823, etc
+  key:__rand_str[8b]__   => key:af3*s-vn, etc
+  key:__rand_str[10kb]__ => key:asdf21-1832....."
+  [x]
   (let [f (fn [[_ val-type size unit]]
             (if (= "int" val-type)
-              (str (rand-int (Integer/MAX_VALUE)))
-              (String. (rand-chars (Long/parseLong size) (keyword unit)))))]
+              (str (rand-int Integer/MAX_VALUE))
+              (String. (util/rand-chars (Long/parseLong size) (keyword unit)))))]
     (str/replace x #"(?i)__rand_(int|str\[(\d+)(b|kb|mb|gb)\])__" f)))
 
 (defn args->command [[command :as arguments]]
@@ -96,8 +97,9 @@
        (map sub-random-value)
        (into [(keyword (str/lower-case command))])))
 
-(defn run [args {time? :time :keys [repeat interval host port] :as options :or {time? false}}]
-  (with-open [conn (redis/connect host port)]
+(defn run [args {time? :time :keys [repeat interval ^java.net.InetAddress host port] :as options :or {time? false}}]
+  (spy :debug options)
+  (with-open [conn (redis/connect (.getHostAddress host) port)]
     (loop [stats initial-latency-stats
            n     (dec repeat)]
       (let [command   (args->command args)
@@ -125,7 +127,7 @@
   (System/exit status))
 
 (def cli-options
-  [["-h" "--hostname HOST" "Remote host"
+  [["-h" "--host HOST" "Remote host"
     :default (InetAddress/getByName "127.0.0.1")
     :default-desc "127.0.0.1"
     :parse-fn #(InetAddress/getByName %)]
@@ -166,6 +168,7 @@
 (defn -main [& args]
   (timbre/set-level! :error)
   (let [{:keys [options arguments errors summary] :as ops} (cli/parse-opts args cli-options)]
+    (spy :debug options)
     (timbre/set-level! (verbosity->level (:verbosity options)))
     (cond
       (:help options)

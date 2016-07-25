@@ -124,7 +124,7 @@
 (deftest invalid-connection-test
   (testing "when a connection is refused"
     (with-open [client (connect "10.18.10.1" 7000)]
-      (is (instance? clojure.lang.ExceptionInfo (deref (send-command client ["get" "foo"]) 1000 :timeout))))))
+      (is (instance? clojure.lang.ExceptionInfo (deref (send-command client [:get "foo"]) 1000 :timeout))))))
 
 (deftest eager-connect-test
   (with-open [client (connect "10.18.10.1" 6379)]

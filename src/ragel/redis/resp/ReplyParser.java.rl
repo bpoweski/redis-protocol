@@ -50,11 +50,13 @@ action bulk_reply_body {
 
 
   if (consumed == bulkLength) {
-    println("read: " + (fpc - mark + 1) + " chars, exiting");
+    println("read full bulk response: " + (fpc - mark + 1));
 
     if (root == currentParent) {
+        println("fnext ::main::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;");
         fnext ::main::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;
     } else {
+        println("fnext ::resp_array_items::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;");
         fnext ::resp_array_items::resp_item::resp_bulk::resp_bulk_content::resp_end_of_bulk;
     }
   }
@@ -101,21 +103,11 @@ action check_if_complete {
   }
 }
 
-action complete {
-  if (root.isComplete()) {
+action check_if_end_of_reply {
+  if (currentParent == root && root.isComplete()) {
     println("complete: true");
     parseState = PARSE_COMPLETE;
     fnext overflow;
-  }
-}
-
-
-action check_if_finished {
-  if (currentParent == root && root.isComplete()) {
-      println("check_if_finished: true");
-      parseState = PARSE_COMPLETE;
-  } else {
-      println("check_if_finished: false");
   }
 }
 
@@ -129,13 +121,6 @@ postpop {
   println("postpop: fpc: " + fpc + ", pe: " + pe);
   printchars(data, fpc, pe);
   println(root.toString());
-
-  if (currentParent == root && root.isComplete()) {
-      println("check_if_finished: true");
-      parseState = PARSE_COMPLETE;
-  } else {
-      println("check_if_finished: false");
-  }
 }
 
 crlf                        = "\r\n";
@@ -152,14 +137,14 @@ resp_integer                = ":" ("-"? digit+) >mark crlf @integer_reply;
 # RESP Bulk Strings
 resp_bulk_nil               = "-1" crlf @null_bulk_reply;
 resp_bulk_empty             = "0" crlf{2} @empty_bulk_reply;
-resp_end_of_bulk            = crlf;
+resp_end_of_bulk            = crlf; # used for fnext
 resp_bulk_content           = (([1-9] digit*) >mark crlf >bulk_header_start  any >mark (any >bulk_reply_body)* resp_end_of_bulk @bulk_reply);
 resp_bulk                   = "$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content);
 
 # RESP Arrays
 resp_null_array             = "-1" crlf @push_null_array;
 resp_empty_array            = "0" crlf @push_empty_array;
-resp_non_empty_array_header = ([1-9] digit*) >mark crlf @push_array @{ println("new array: "); fcall resp_array_items; };
+resp_non_empty_array_header = ([1-9] digit*) >mark crlf @push_array @{ fcall resp_array_items; } %check_if_end_of_reply;
 resp_array_header           = (resp_null_array | resp_empty_array | resp_non_empty_array_header );
 resp_array                  = "*" (resp_null_array | resp_empty_array | resp_array_header);
 
@@ -173,8 +158,8 @@ resp_item           = resp_simple  |
 
 resp_array_items    := (resp_item >debug @check_if_complete)+ ;
 
-overflow            = any*;
-main                := (resp_item %debug @complete)+ <: overflow ${ parseState = PARSE_OVERFLOW; fhold; fbreak; };
+overflow            = any*; # used fnext
+main                := (resp_item @check_if_end_of_reply)+ <: overflow ${ parseState = PARSE_OVERFLOW; fhold; fbreak; };
 
 }%%
 
@@ -243,11 +228,11 @@ public class ReplyParser {
   }
 
   public static void println(String s) {
-    // System.out.println(s);
+    //System.out.println(s);
   }
 
   public static void print(String s) {
-    // System.out.print(s);
+    //System.out.print(s);
   }
 
   public void printchars(byte[] data, int start, int stop) {

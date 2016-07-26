@@ -1,13 +1,12 @@
 (ns redis-protocol.parser-test
-  (:require [clojure.test :refer :all]
-            [redis-protocol.util :as util]
-            [redis-protocol.core :as c]
-            [clojure.string :as str]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.java.shell :as sh]
-            [clojure.tools.trace :as t])
-  (:import (redis.resp ReplyParser)))
+            [clojure.test :refer :all :exclude [report]]
+            [redis-protocol.util :as util]
+            [taoensso.timbre :as timbre])
+  (:import redis.resp.ReplyParser))
 
+(timbre/refer-timbre)
 
 (defn reload
   "Recompiles & reloads the ReplyParser to continue to work within the REPL."
@@ -32,7 +31,8 @@
                   nil)
     (.importClass @#'clojure.core/*ns* (Class/forName full-classname))))
 
-(reload)
+(comment
+  (reload))
 
 (defn parse-str [^String s]
   (let [parser (ReplyParser.)

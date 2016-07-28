@@ -580,7 +580,7 @@
 
   (def commands
     (with-open [client (connect "10.18.10.2" 6379)]
-      (resp->persistent @(send-command client [:command]))))
+      (resp->persistent @(send-command client [:COMMAND :INFO :get :set :eval]))))
 
   (with-open [client (connect "10.18.10.2" 6379)]
     (def command-cache (update-command-cache client))

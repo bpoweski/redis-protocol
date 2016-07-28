@@ -3,7 +3,8 @@
             [clojure.java.shell :as sh]
             [clojure.test :refer :all :exclude [report]]
             [redis-protocol.util :as util]
-            [taoensso.timbre :as timbre])
+            [taoensso.timbre :as timbre]
+            [clojure.string :as str])
   (:import redis.resp.ReplyParser))
 
 (timbre/refer-timbre)
@@ -31,6 +32,8 @@
                   nil)
     (.importClass @#'clojure.core/*ns* (Class/forName full-classname))))
 
+(comment (reload))
+
 (defn parse-str [^String s]
   (let [parser (ReplyParser.)
         state  (.parse parser s)]
@@ -39,6 +42,12 @@
       ReplyParser/PARSE_INCOMPLETE (ex-info "parse incomplete" {})
       ReplyParser/PARSE_OVERFLOW   (ex-info "parse overflow" {:overflow (util/ascii-str (.getOverflow parser))})
       (ex-info "parse error" {}))))
+
+(defn random-partition [upper-n coll]
+  (lazy-seq
+   (when-let [s (seq coll)]
+     (let [n (inc (rand-int (dec upper-n)))]
+       (cons (doall (take n s)) (random-partition upper-n (drop n s)))))))
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
@@ -71,15 +80,22 @@
     (is (nil? (get (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n") 1)))
     (is (util/bytes= "bar" (last (parse-str "*3\r\n$3\r\nfoo\r\n$-1\r\n$3\r\nbar\r\n")))))
   (testing "Overflowing a response"
+    (let [msg       "*6\r\n$12\r\nbgrewriteaof\r\n:1\r\n*1\r\n+admin\r\n:0\r\n:0\r\n:0\r\n+OK\r\n"
+          part      (str/join (take 20 msg))
+          remaining (str/join (drop 20 msg))
+          parser    (ReplyParser.)]
+      (is (= ReplyParser/PARSE_INCOMPLETE (.parse parser part)))
+      (is (= ReplyParser/PARSE_OVERFLOW (.parse parser remaining)))
+      (is (= "+OK\r\n" (String. (.getOverflow parser)))))
     (let [parsers (vec (take 4 (repeatedly #(ReplyParser. 1))))]
-      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 0) "*0\r\n*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n")))
+      (is (= ReplyParser/PARSE_OVERFLOW (.parse (get parsers 0) "*0\r\n*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n")))
       (is (= [] (first (.root (get parsers 0 )))))
       (is (= "*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n" (util/ascii-str (.getOverflow (get parsers 0)))))
-      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 1) (.getOverflow (get parsers 0)))))
+      (is (= ReplyParser/PARSE_OVERFLOW (.parse (get parsers 1) (.getOverflow (get parsers 0)))))
       (is (= [] (first (.root (get parsers 1 )))))
-      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 2) (.getOverflow (get parsers 1)))))
+      (is (= ReplyParser/PARSE_OVERFLOW (.parse (get parsers 2) (.getOverflow (get parsers 1)))))
       (is (= [] (first (.root (get parsers 2)))))
-      (is (= (ReplyParser/PARSE_COMPLETE) (.parse (get parsers 3) (.getOverflow (get parsers 2)))))
+      (is (= ReplyParser/PARSE_COMPLETE (.parse (get parsers 3) (.getOverflow (get parsers 2)))))
       (is (util/bytes= ":20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y" (ffirst (.root (get parsers 3))))))
     (let [parser (ReplyParser.)]
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+MOVED")))

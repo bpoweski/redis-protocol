@@ -31,15 +31,14 @@
                   nil)
     (.importClass @#'clojure.core/*ns* (Class/forName full-classname))))
 
-(comment
-  (reload))
-
 (defn parse-str [^String s]
   (let [parser (ReplyParser.)
         state  (.parse parser s)]
-    (if (= state (ReplyParser/PARSE_COMPLETE))
-      (first (.root parser))
-      (throw (ex-info "parse incomplete" {})))))
+    (condp = state
+      ReplyParser/PARSE_COMPLETE   (first (.root parser))
+      ReplyParser/PARSE_INCOMPLETE (ex-info "parse incomplete" {})
+      ReplyParser/PARSE_OVERFLOW   (ex-info "parse overflow" {:overflow (util/ascii-str (.getOverflow parser))})
+      (ex-info "parse error" {}))))
 
 (deftest reply-parser-test
   (testing "RESP Simple Strings"
@@ -75,6 +74,7 @@
     (let [parsers (vec (take 4 (repeatedly #(ReplyParser. 1))))]
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 0) "*0\r\n*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n")))
       (is (= [] (first (.root (get parsers 0 )))))
+      (is (= "*0\r\n*0\r\n*1\r\n$52\r\n:20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y\r\n" (util/ascii-str (.getOverflow (get parsers 0)))))
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 1) (.getOverflow (get parsers 0)))))
       (is (= [] (first (.root (get parsers 1 )))))
       (is (= (ReplyParser/PARSE_OVERFLOW) (.parse (get parsers 2) (.getOverflow (get parsers 1)))))
@@ -82,10 +82,15 @@
       (is (= (ReplyParser/PARSE_COMPLETE) (.parse (get parsers 3) (.getOverflow (get parsers 2)))))
       (is (util/bytes= ":20160705:20160705:T::DBL:CV-DX::2:100:Y:Y:Y:Y:Y:Y:Y" (ffirst (.root (get parsers 3))))))
     (let [parser (ReplyParser.)]
-      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+O")))
-      (is (util/bytes= (.getOverflow parser) (.getBytes "+O")))))
+      (is (= (ReplyParser/PARSE_OVERFLOW) (.parse parser "+OK\r\n+MOVED")))
+      (is (= "+MOVED" (util/ascii-str (.getOverflow parser)))))
+    (let [parser (ReplyParser.)]
+      (is (= 3 (.parse parser "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n*40\r\ndog..")))
+      (is (= "*40\r\ndog.." (util/ascii-str (.getOverflow parser))))))
   (testing "Multiple Replies"
     (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "+OK\r\n:1\r\n")))
     (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "*0\r\n*0\r\n")))
     (is (= ReplyParser/PARSE_INCOMPLETE (.parse (ReplyParser. 3) "*0\r\n*0\r\n")))
-    (is (= ReplyParser/PARSE_OVERFLOW (.parse (ReplyParser. 1) "*0\r\n*0\r\n")))))
+    (is (= ReplyParser/PARSE_OVERFLOW (.parse (ReplyParser. 1) "*0\r\n*0\r\n"))))
+  (testing "Parsing Incomplete"
+    (is (= ReplyParser/PARSE_INCOMPLETE (.parse (ReplyParser. 2) "OK\r")))))

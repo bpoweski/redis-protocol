@@ -31,18 +31,19 @@ action null_bulk_reply {
 
 action bulk_length {
   bulkLength = (int)Long.parseLong(new String(Arrays.copyOfRange(data, mark, fpc + 1)));
-
-  // hint the minimum size buffer needed to satisfy everything up-to the current bulk string for later incremental parsing
   minimumBufferSize = Math.max(fpc + 2 + bulkLength + 2, pe);
 }
 
 action start_bulk {
-  mark         = fpc;
-  bulkConsumed = 0;
+  mark = fpc;
 }
 
-action has_bulk_consumed {
-  ++bulkConsumed < bulkLength
+action bulk_skip {
+  if ((fpc - mark) == (bulkLength - 1)) {
+    fnext resp_bulk_end;
+  } else {
+    fexec Math.min(fpc + bulkLength - 2, pe);
+  }
 }
 
 action bulk_reply {
@@ -76,16 +77,10 @@ action check_if_reply_complete {
   }
 }
 
-action debug {
-  println("debug: fpc: " + fpc + ", pe: " + pe);
-  printchars(data, fpc, pe);
-  println(root.toString());
-}
-
 crlf                        = "\r\n";
 
 # RESP Simple
-resp_simple                 := "+" simple_string: (any* -- crlf) >mark crlf @simple_reply @check_if_reply_complete;
+resp_simple                 := "+" (any* -- crlf) >mark crlf @simple_reply @check_if_reply_complete;
 
 # RESP Error
 resp_error                  := "-" (any* -- crlf) >mark crlf @error_reply @check_if_reply_complete;
@@ -96,7 +91,8 @@ resp_integer                := ":" ("-"? digit+) >mark crlf @integer_reply @chec
 # RESP Bulk Strings
 resp_bulk_nil               = "-1" crlf @null_bulk_reply;
 resp_bulk_empty             = "0" crlf{2} @empty_bulk_reply;
-resp_bulk_content           = ([1-9] digit*) >mark @bulk_length crlf any >start_bulk (any when has_bulk_consumed)* crlf @bulk_reply;
+resp_bulk_end               = crlf; # used for fnext
+resp_bulk_content           = ([1-9] digit*) >mark @bulk_length crlf any >start_bulk (any >bulk_skip)* resp_bulk_end @bulk_reply;
 resp_bulk                   := "$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content) @check_if_reply_complete;
 
 # RESP Arrays
@@ -181,7 +177,7 @@ public class ReplyParser {
   }
 
   public static void print(String s) {
-    System.out.print(s);
+    //System.out.print(s);
   }
 
   public void printchars(byte[] data, int start, int stop) {

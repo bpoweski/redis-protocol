@@ -182,6 +182,6 @@
   (for [block (str/split s #"\n\n")]
     (->> block
          str/split-lines
-         (mapcat #(drop-last 1 (str/split (str/triml %) #"\s+")))
+         (mapcat #(str/split (reduce str (take 48 (str/triml %))) #"\s+"))
          (str/join)
          (javax.xml.bind.DatatypeConverter/parseHexBinary))))

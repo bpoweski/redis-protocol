@@ -40,9 +40,12 @@ action start_bulk {
 
 action bulk_skip {
   if ((fpc - mark) == (bulkLength - 1)) {
+    //println("fnext: " + fpc);
+    //printchars(data, fpc, pe);
     fnext resp_bulk_end;
   } else {
-    fexec Math.min(fpc + bulkLength - 2, pe);
+    //println("fexec: " + Math.min(mark + bulkLength - 2, pe));
+    fexec Math.min(mark + bulkLength - 1, pe);
   }
 }
 
@@ -76,33 +79,34 @@ action check_if_reply_complete {
 }
 
 action return {
+  println("returning..");
   fgoto reply;
 }
 
 crlf                        = "\r\n";
 
 # RESP Simple
-resp_simple                 := "+" (any* -- crlf) >mark crlf @simple_reply @check_if_reply_complete @return;
+resp_simple                 := ("+" (any* -- crlf) >mark crlf @simple_reply @check_if_reply_complete) @return;
 
 # RESP Error
-resp_error                  := ("-" (any* -- crlf) >mark crlf @error_reply @check_if_reply_complete @return);
+resp_error                  := ("-" (any* -- crlf) >mark crlf @error_reply @check_if_reply_complete) @return;
 
 # RESP Integers
-resp_integer                := (":" ("-"? digit+) >mark crlf @integer_reply @check_if_reply_complete @return);
+resp_integer                := (":" ("-"? digit+) >mark crlf @integer_reply @check_if_reply_complete) @return;
 
 # RESP Bulk Strings
 resp_bulk_nil               = "-1" crlf @null_bulk_reply;
 resp_bulk_empty             = "0" crlf{2} @empty_bulk_reply;
 resp_bulk_end               = crlf; # used for fnext
 resp_bulk_content           = ([1-9] digit*) >mark @bulk_length crlf any >start_bulk (any >bulk_skip)* resp_bulk_end @bulk_reply;
-resp_bulk                   := ("$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content) @check_if_reply_complete @return);
+resp_bulk                   := ("$" (resp_bulk_empty | resp_bulk_nil | resp_bulk_content) @check_if_reply_complete) @return;
 
 # RESP Arrays
 resp_null_array             = "-1" crlf;
 resp_empty_array            = "0" crlf;
 resp_non_empty_array_header = ([1-9] digit*) >mark crlf @push_array;
 resp_non_empty_array        = resp_non_empty_array_header @{ fgoto reply; };
-resp_array                  := ("*" (resp_null_array @push_null_array | resp_empty_array @push_empty_array | resp_non_empty_array_header) @check_if_reply_complete @return);
+resp_array                  := ("*" (resp_null_array @push_null_array | resp_empty_array @push_empty_array | resp_non_empty_array_header) @check_if_reply_complete) @return;
 
 reply                       := ('+' @{ fhold; fgoto resp_simple;   } |
                                 '-' @{ fhold; fgoto resp_error;    } |

@@ -107,6 +107,8 @@
     (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "+OK\r\n:1\r\n")))
     (is (= ReplyParser/PARSE_COMPLETE (.parse (ReplyParser. 2) "*0\r\n*0\r\n")))
     (is (= ReplyParser/PARSE_INCOMPLETE (.parse (ReplyParser. 3) "*0\r\n*0\r\n")))
-    (is (= ReplyParser/PARSE_OVERFLOW (.parse (ReplyParser. 1) "*0\r\n*0\r\n"))))
+    (is (= ReplyParser/PARSE_OVERFLOW (.parse (ReplyParser. 1) "*0\r\n*0\r\n")))
+    (let [parser (ReplyParser.)]
+      (is (= ReplyParser/PARSE_COMPLETE (last (map #(.parse parser %)(conj (into ["$10\r\n"] (map str/join (partition 2 (range 0 10)))) "\r\n")))))))
   (testing "Parsing Incomplete"
     (is (= ReplyParser/PARSE_INCOMPLETE (.parse (ReplyParser. 2) "OK\r")))))

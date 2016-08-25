@@ -185,3 +185,13 @@
          (mapcat #(str/split (reduce str (take 48 (str/triml %))) #"\s+"))
          (str/join)
          (javax.xml.bind.DatatypeConverter/parseHexBinary))))
+
+(defn parse-info [s]
+  (let [m (->> s
+               str/split-lines
+               (map #(str/split % #":"))
+               (filter #(= (count %) 2))
+               (into {}))]
+    (reduce-kv (fn [m k v] (assoc m (keyword (str/replace k "_" "-")) v))
+               {}
+               (or m {}))))

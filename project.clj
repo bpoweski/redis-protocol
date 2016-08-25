@@ -30,6 +30,7 @@
   :source-paths ["src/clojure"]
   :java-source-paths ["src/java" "target/ragel"]
   :ragel-source-paths ["src/ragel"]
+  :javac-options ["-target" "1.7" "-source" "1.7"]
   :prep-tasks ["ragel" "javac"]
   :aliases {"build" ["do" ["clean"] ["ragel"] ["javac"]]
             "perf"  ["with-profile" "+perf" "perforate"]})

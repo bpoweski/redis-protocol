@@ -123,12 +123,10 @@
 
 (deftest invalid-connection-test
   (testing "when a connection is refused"
-    (with-open [client (connect "10.18.10.1" 7000)]
-      (is (instance? clojure.lang.ExceptionInfo (deref (send-command client [:get "foo"]) 1000 :timeout))))))
+    (is (thrown? clojure.lang.ExceptionInfo (connect "10.18.10.1" 7000)))))
 
 (deftest eager-connect-test
   (with-open [client (connect "10.18.10.1" 6379)]
-    (connect-all client)
     (is (= 6 (count @(:connections client))))))
 
 (use-fixtures :each without-debug)

@@ -20,11 +20,13 @@
 (def OP_WRITE (SelectionKey/OP_WRITE))
 
 (set! *warn-on-reflection* true)
-;; (set! *unchecked-math* :warn-on-boxed)
 
 (timbre/refer-timbre)
 
 (def cluster-hash-slots 16384)
+
+(defn address? [x]
+  (instance? InetSocketAddress x))
 
 (defn drain
   "Drains items from q into a new collection."
@@ -222,10 +224,12 @@
    (let [timeout (ex-info "Operation timed out" {:timeout? true :args args})
          fut     (.schedule scheduled-executor ^Runnable (fn [] (f timeout)) 10000 (TimeUnit/MILLISECONDS))
          op      (write-operation args f fut)
-         op      (if-let [slot (routable-slot (spy :debug args) @command-cache)]
+         op      (if-let [slot (routable-slot (spy :trace args) @command-cache)]
                    (assoc op :slot slot)
                    op)]
-     (.addLast dispatch-queue (if (instance? InetSocketAddress address) [:resolve op address] [:resolve op]))
+     (.addLast dispatch-queue (if (address? address)
+                                [:resolve op address]
+                                [:resolve op]))
      (.wakeup selector)
      f)))
 
@@ -285,7 +289,7 @@
   (let [current-ops (.interestOps k)
         new-ops     (bit-or current-ops x)]
     (when (not= current-ops new-ops)
-      (debug (remote-address k) "adding op" (ops->str current-ops) "->" (ops->str new-ops))
+      (trace (remote-address k) "adding op" (ops->str current-ops) "->" (ops->str new-ops))
       (.interestOps k new-ops))))
 
 (defn ignore-op!
@@ -294,7 +298,7 @@
    (let [current-ops (.interestOps k)
          new-ops     (bit-and current-ops (bit-not x))]
      (when (not= current-ops new-ops)
-       (debug (remote-address k) "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
+       (trace (remote-address k) "ignoring op" (ops->str current-ops) "->" (ops->str new-ops)))
      (.interestOps k new-ops))))
 
 (defmulti dispatch
@@ -331,7 +335,7 @@
                             (= ReplyParser/PARSE_OVERFLOW outcome)
                             (do (debug (remote-address k) "completed parsing op, but more byte(s) remain")
                                 (when overflow
-                                  (warn (remote-address k) "buffer has an additional" (alength overflow) "byte(s)")
+                                  (debug (remote-address k) "buffer has an additional" (alength overflow) "byte(s)")
                                   (trace-bytes overflow (str (remote-address k) " remaining byte(s) in receive buffer")))
                                 (.removeFirst read-queue)
                                 (complete op client)
@@ -396,9 +400,9 @@
 (defn open-connection [{:keys [seeds ^Selector selector connections] :as client} address]
   (let [{:keys [^SocketChannel channel ^InetSocketAddress address] :as conn} (socket-connection address)]
     (if (.connect channel address)
-      (do (debug address "connection has been established immediately, registering" (ops->str OP_READ))
+      (do (trace address "connection has been established immediately, registering" (ops->str OP_READ))
           (.register channel selector OP_READ conn))
-      (do (debug address "connection cannot be established immediately, registering" (ops->str OP_CONNECT))
+      (do (trace address "connection cannot be established immediately, registering" (ops->str OP_CONNECT))
           (.register channel selector OP_CONNECT conn)))
     (swap! connections assoc address conn)
     conn))
@@ -407,9 +411,10 @@
   (or (get @connections address)
       (open-connection client address)))
 
-(defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue slot-cache command-cache] :as client} [_ op addr]]
+(defmethod dispatch :resolve [connections {:keys [seeds ^Selector selector ^ConcurrentLinkedDeque dispatch-queue cluster? slot-cache command-cache] :as client} [_ op addr]]
   (let [conns         @connections
-        resolved-conn (if-let [address (or addr (spy :debug (get @slot-cache (:slot op))))]
+        slot          (:slot op)
+        resolved-conn (if-let [address (or addr (get @slot-cache (:slot op)))]
                         (resolve-connection client address)
                         (or (rand-nth (vals conns))
                             (resolve-connection client (rand-seed client))))]
@@ -423,7 +428,7 @@
 
           (.isConnected channel)
           (let [k (.keyFor channel selector)]
-            (do (debug address "op is incomplete" (:write-buffer op))
+            (do (trace address "op is incomplete" (:write-buffer op))
                 (.addLast write-queue op)
                 (set-op! k OP_WRITE)))
 
@@ -546,7 +551,7 @@
 (defn connect
   "Creates and attempts to establish a connection to Redis"
   ([{:keys [seeds] :as config}]
-   {:pre [(seq seeds) (every? #(instance? InetSocketAddress %) seeds)]}
+   {:pre [(seq seeds) (every? address? seeds)]}
    (let [client (create-connection config)]
      (loop [[seed & more] (seq seeds)]
        (debug "attempting to connect to" seed)

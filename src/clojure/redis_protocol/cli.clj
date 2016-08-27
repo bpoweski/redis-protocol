@@ -7,7 +7,7 @@
             [clojure.tools.trace :as t]
             [redis-protocol.util :as util])
   (:import (java.util.concurrent TimeUnit)
-           (java.net InetAddress)))
+           (java.net InetAddress InetSocketAddress)))
 
 
 (timbre/refer-timbre)
@@ -53,7 +53,7 @@
   (flush))
 
 (defn latency [{:keys [interval host port] :as options :or {interval 1.0}}]
-  (with-open [conn (redis/connect host port)]
+  (with-open [conn (redis/connect (.getHostAddress host) port)]
     (loop [history-start (System/nanoTime)
            start         history-start
            stats         initial-latency-stats]

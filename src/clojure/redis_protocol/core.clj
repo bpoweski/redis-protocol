@@ -195,6 +195,12 @@
   Closeable
   (close [this]
     (.addLast dispatch-queue [:shutdown])
+    (.wakeup selector)
+    (when-let [^Thread thread (:thread this)]
+      (.join thread 10000)
+      (if (.isAlive thread)
+        (warn "IO Thread is still running after shutdown event dispatched.  This is likely a bug")
+        (debug "IO Thread has stopped")))
     (.shutdown scheduled-executor)))
 
 (defrecord SocketConnection [^SocketChannel channel ^InetSocketAddress address read-buffer read-queue write-queue]
@@ -505,17 +511,25 @@
        (reduce conj {})
        (swap! command-cache merge)))
 
+(defrecord SlotCache [])
+
+(defmethod clojure.core/print-method SlotCache
+  [system ^java.io.Writer writer]
+  (.write writer "#<SlotCache>"))
+
 (defn create-connection [{:keys [seeds resolve-slot?] :or {resolve-slot? true}}]
   (let [selector (Selector/open)
         executor (doto (ScheduledThreadPoolExecutor. 1) ;; used for timeouts
                    (.setRemoveOnCancelPolicy true))
-        client   (->RedisClient seeds selector (atom {}) (atom {}) (atom {}) (ConcurrentLinkedDeque.) executor)
+        client   (->RedisClient seeds selector (atom {}) (atom {}) (atom (->SlotCache)) (ConcurrentLinkedDeque.) executor)
         io-fn    (fn []
                    (try
                      (nio-loop client)
                      (catch Exception err
                        (error err))))]
-    (assoc client :thread (doto (Thread. io-fn (str "RedisProtocol-IO")) (.start)))))
+    (assoc client :thread (doto (Thread. io-fn (str "RedisProtocol-IO"))
+                            (.setDaemon true)
+                            (.start)))))
 
 (defn cluster-connect-all
   "Discovers and connects to each cluster node."
@@ -537,29 +551,30 @@
      (loop [[seed & more] (seq seeds)]
        (debug "attempting to connect to" seed)
        (let [resp @(send-command client [:info] seed)]
-         (if (instance? Exception resp)
-           (do (warn resp "Exception when connecting to seed" seed)
-               (if (seq more)
-                 (recur more)
-                 (throw resp)))
-           (if (bytes? resp)
-             (let [{:keys [cluster-enabled] :as redis-info} (util/parse-info (util/ascii-str resp))]
-               (when (= "1" cluster-enabled)
-                 (debug "seed" seed "is a Redis cluster node")
-                 (doto client
-                   (cluster-connect-all seed)
-                   (update-command-cache seed)
-                   (refresh-slot-cache seed))))
-             (debug "info response not returned" resp)))))
-     client))
-  ([host port] (connect {:seeds #{(InetSocketAddress. (str host) ^long port)}})))
+         (if (bytes? resp)
+           (let [{:keys [cluster-enabled] :as redis-info} (util/parse-info (util/ascii-str resp))]
+             (if (= "1" cluster-enabled)
+               (do (debug "seed" seed "is a Redis cluster node")
+                   (doto client
+                     (cluster-connect-all seed)
+                     (update-command-cache seed)
+                     (refresh-slot-cache seed))
+                   (assoc client :cluster? true))
+               (assoc client :cluster? false)))
+           (if (seq more)
+             (recur more)
+             (throw (ex-info "unable to connect to any seed" {:seeds seeds}))))))))
+  ([host port]
+   (connect {:seeds #{(InetSocketAddress. (str host) ^long port)}})))
 
 (defn build-slot-cache [reply]
-  (into {}
-        (for [[from to [master-ip master-port] & slaves] (resp->persistent reply)
-              :let [address (InetSocketAddress. (util/ascii-str master-ip) (int master-port))]
-              slot (range from (inc to))]
-          [slot address])))
+  (map->SlotCache
+   (into
+    {}
+    (for [[from to [master-ip master-port] & slaves] (resp->persistent reply)
+          :let [address (InetSocketAddress. (util/ascii-str master-ip) (int master-port))]
+          slot (range from (inc to))]
+      [slot address]))))
 
 (defn refresh-slot-cache
   "Asynchronously refreshes the slot cache using CLUSTER SLOTS."
@@ -570,7 +585,7 @@
                   (try
                     (cond (error? reply)              (error "received error when building calling CLUSTER SLOTS" reply)
                           (instance? Throwable reply) (error reply "connection error when calling CLUSTER SLOTS")
-                          :else                       (swap! slot-mappings merge (build-slot-cache reply)))
+                          :else                       (reset! slot-mappings (build-slot-cache reply)))
                     (catch Exception err
                       (error err "Caught Error when parsing response"))))))
 

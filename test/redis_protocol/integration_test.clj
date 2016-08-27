@@ -127,6 +127,7 @@
 
 (deftest eager-connect-test
   (with-open [client (connect "10.18.10.1" 6379)]
-    (is (= 6 (count @(:connections client))))))
+    (is (= 6 (count @(:connections client))))
+    (is (true? (:cluster? client)))))
 
 (use-fixtures :each without-debug)

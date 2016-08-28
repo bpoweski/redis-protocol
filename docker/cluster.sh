@@ -2,7 +2,7 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-eval $(docker-machine env)
+# eval $(docker-machine env)
 
 export NODES=$(seq 1 6)
 export IMAGE=redis:3.2
@@ -59,7 +59,6 @@ setup-network () {
 case "$1" in
     boot)
         docker pull $IMAGE
-        setup-network
         start-nodes
         create-cluster
         ;;

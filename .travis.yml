@@ -6,8 +6,8 @@ services:
   - docker
 
 install:
-  - curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > /usr/local/bin/docker-machine-router
-  - chmod +x /usr/local/bin/docker-machine-router
+  - sudo curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > /usr/local/bin/docker-machine-router
+  - sudo chmod +x /usr/local/bin/docker-machine-router
 
 script:
   - docker/cluster.sh boot

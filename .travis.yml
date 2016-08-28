@@ -5,9 +5,12 @@ sudo: required
 services:
   - docker
 
-install:
-  - sudo curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > /usr/local/bin/docker-machine-router
-  - sudo chmod +x /usr/local/bin/docker-machine-router
+before_script:
+  - export DOCKER_MACHINE_ROUTER=/tmp/docker-machine-router-v0.2.1/bin
+  - mkdir -p
+  - curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > $DOCKER_MACHINE_ROUTER/docker-machine-router
+  - chmod +x $DOCKER_MACHINE_ROUTER/docker-machine-router
+  - export PATH=$PATH:$DOCKER_MACHINE_ROUTER
 
 script:
   - docker/cluster.sh boot

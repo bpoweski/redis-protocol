@@ -1,7 +1,5 @@
 language: clojure
 
-sudo: required
-
 services:
   - docker
 

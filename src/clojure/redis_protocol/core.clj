@@ -594,42 +594,22 @@
                     (catch Exception err
                       (error err "Caught Error when parsing response"))))))
 
-(comment
-  (with-open [client (connect "172.17.0.2" 7000)]
-    (let [returns (doseq [_ (range 1)]
-                    (send-command client ["set" "bar" "1"]))]
-      (Thread/sleep 100000)))
+(defn reply->cluster-nodes [resp]
+  (if (instance? byte-array-class resp)
+    (util/parse-cluster-nodes (util/ascii-str resp))
+    (throw (ex-info "cluster nodes failed" {:resp resp}))))
 
-  (with-open [client (connect "10.18.10.2" 6379)]
-    (let [r1 (send-command client ["get" "foo"])
-          r2 (send-command client ["get" "bar"])]
-      [@r1 @r2]))
+(defn cluster-nodes
+  "Synchronously calls CLUSTER NODES.  Returns a seq of maps representing the parsed output throws otherwise."
+  [client]
+  (reply->cluster-nodes @(send-command client [:cluster :nodes])))
 
-  (with-open [client (connect "10.18.10.1" 6379)]
-    (cluster-connect-all client))
-
-  (def commands
-    (with-open [client (connect "10.18.10.2" 6379)]
-      (resp->persistent @(send-command client [:COMMAND]))))
-
-  (with-open [client (connect "10.18.10.2" 6379)]
-    (def command-cache (update-command-cache client))
-    client)
-
-  (with-open [client (connect "10.18.10.2" 6379)]
-    (-> client
-        cluster-connect-all
-        :connections
-        deref
-        keys
-        (debug))
-
-    @(send-command client [:cluster :nodes])
-    )
-
-  (with-open [client (connect "10.18.10.2" 6379)]
-    @(send-command client [:cluster :slots]))
-
-  (with-open [client (connect {:seeds [(InetSocketAddress. "10.18.10.99" 6379) (InetSocketAddress. "10.18.10.2" 6379)]})]
-    @(send-command client [:info]))
-  )
+(defn cluster-node-configs
+  "Synchronously calls CLUSTER NODES and returns a map of each node's configuration"
+  [client]
+  (let [nodes (cluster-nodes client)]
+    (->> nodes
+         (map :redis/address)
+         (mapv #(send-command client [:cluster :nodes] %))
+         (map (comp reply->cluster-nodes deref))
+         (zipmap (map :redis/address nodes)))))

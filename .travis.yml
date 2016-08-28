@@ -7,7 +7,7 @@ services:
 
 before_script:
   - export DOCKER_MACHINE_ROUTER=/tmp/docker-machine-router-v0.2.1/bin
-  - mkdir -p
+  - mkdir -p $DOCKER_MACHINE_ROUTER
   - curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > $DOCKER_MACHINE_ROUTER/docker-machine-router
   - chmod +x $DOCKER_MACHINE_ROUTER/docker-machine-router
   - export PATH=$PATH:$DOCKER_MACHINE_ROUTER

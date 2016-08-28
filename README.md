@@ -14,6 +14,13 @@ A Redis Cluster Clojure library based on NIO. An (incomplete) work in progress.
 
 ## Usage
 
+### CLI Examples
+
+```clojure
+$ lein run -m redis-protocol.cli get foo
+(nil)
+```
+
 
 FIXME
 

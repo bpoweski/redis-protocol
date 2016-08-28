@@ -6,17 +6,12 @@ services:
   - docker
 
 before_script:
-  - export DOCKER_MACHINE_ROUTER=/tmp/docker-machine-router-v0.2.1/bin
-  - mkdir -p $DOCKER_MACHINE_ROUTER
-  - curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > $DOCKER_MACHINE_ROUTER/docker-machine-router
-  - chmod +x $DOCKER_MACHINE_ROUTER/docker-machine-router
-  - export PATH=$PATH:$DOCKER_MACHINE_ROUTER
   - gem install redis -v 3.3
 
 script:
-  - sudo -E /tmp/docker-machine-router-v0.2.1/bin/docker-machine-router
-  - docker/cluster.sh boot
-  - lein test
+  - docker network create --driver=bridge --subnet=10.18.0.0/16 dmr
+  - docker/cluster.sh start-nodes
+  - docker ps -a
 
 jdk:
   - oraclejdk8

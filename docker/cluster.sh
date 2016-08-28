@@ -58,6 +58,7 @@ setup-network () {
 
 case "$1" in
     boot)
+        docker pull $IMAGE
         setup-network
         start-nodes
         create-cluster

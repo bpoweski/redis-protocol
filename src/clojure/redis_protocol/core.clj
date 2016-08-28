@@ -473,7 +473,7 @@
                           (when (and (.isValid selected-key) (.isConnectable selected-key))
                             (handle-connect! client selected-key))
                           (catch Throwable ex
-                            (error ex "Throwable caught when processing selection keys, closing SocketConnection"))))))
+                            (error ex "Throwable caught when processing selection keys"))))))
                   (trace "done processing selection keys")
                   (recur))
                 (do (trace "no keys selected")

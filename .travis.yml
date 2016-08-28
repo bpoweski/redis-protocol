@@ -1,0 +1,17 @@
+language: clojure
+
+sudo: required
+
+services:
+  - docker
+
+install:
+  - curl -L https://github.com/fntlnz/docker-machine-router/releases/download/v0.2.1/docker-machine-router > /usr/local/bin/docker-machine-router
+  - chmod +x /usr/local/bin/docker-machine-router
+
+script:
+  - docker/cluster.sh boot
+  - lein test
+
+jdk:
+  - oraclejdk8

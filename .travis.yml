@@ -10,6 +10,8 @@ before_script:
 
 script:
   - docker network create --driver=bridge --subnet=10.18.0.0/16 dmr
+  - docker network ls
+  - docker/cluster.sh create-volumes
   - docker/cluster.sh start-nodes
   - docker ps -a
 
